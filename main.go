@@ -22,14 +22,16 @@ func main() {
 
 func run() error {
 	var (
-		issuerURL    string
-		clientID     string
-		clientSecret string
-		callbackURL  string
-		scopes       string
-		listenAddr   = "localhost:8080"
-		tlsCert      string
-		tlsKey       string
+		issuerURL     string
+		clientID      string
+		clientSecret  string
+		callbackURL   string
+		scopes        string
+		cookieHashKey string
+		cookieEncKey  string
+		listenAddr    = "localhost:8080"
+		tlsCert       string
+		tlsKey        string
 	)
 	// proxy options
 	defaultScopes := []string{oidc.ScopeOpenID, "email", "profile", oidc.ScopeOfflineAccess}
@@ -38,6 +40,8 @@ func run() error {
 	flag.StringVar(&clientID, "client-id", clientID, "client id")
 	flag.StringVar(&clientSecret, "client-secret", clientSecret, "client secret id")
 	flag.StringVar(&callbackURL, "callback-url", callbackURL, "callback URL")
+	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
+	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
 
 	// server options
 	flag.StringVar(&listenAddr, "addr", listenAddr, "listen address")
@@ -56,8 +60,12 @@ func run() error {
 		ClientSecret: clientSecret,
 		Scopes:       strings.Split(scopes, ","),
 		CallbackURL:  callbackURL,
-		LoginPath:    "/login",
-		LogoutPath:   "/logout",
+
+		LoginPath:  "/login",
+		LogoutPath: "/logout",
+
+		HashKey:    []byte(cookieHashKey),
+		EncryptKey: []byte(cookieEncKey),
 	}
 	handler, err := NewOIDCProxyHandler(config, http.HandlerFunc(infoHandler))
 	if err != nil {

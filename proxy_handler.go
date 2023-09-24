@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -14,13 +15,20 @@ import (
 )
 
 type OIDCProxyConfig struct {
+	// OAuth2 / OIDC
 	IssuerURL    string
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
 	CallbackURL  string
-	LoginPath    string
-	LogoutPath   string
+
+	// handler pathes
+	LoginPath  string
+	LogoutPath string
+
+	// secure cookie
+	HashKey    []byte
+	EncryptKey []byte
 }
 
 func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxyHandler, error) {
@@ -29,9 +37,31 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 		return nil, err
 	}
 
-	//store := cookie.NewSplitCookieStore([]byte("1234567812345678"))
-	cookieHandler := cookie.NewCookieHandler([]byte("1234567891234567"), []byte("0987676565454342"))
+	// Setup Cookiehandler
+	hashKey := config.HashKey
+	encKey := config.EncryptKey
 
+	if len(hashKey) == 0 {
+		hashKey, err = generateKey(32)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(encKey) == 0 {
+		encKey = nil
+	}
+
+	if !(len(hashKey) == 32 || len(hashKey) == 64) {
+		return nil, fmt.Errorf("hash key has invalid key length. a length of 32 or 64 is required")
+	}
+	if !(len(encKey) == 0 || len(encKey) == 32 || len(encKey) == 64) {
+		return nil, fmt.Errorf("hash key has invalid key length. a length of 32 or 64 is required")
+	}
+
+	cookieHandler := cookie.NewCookieHandler(hashKey, encKey)
+
+	// Perform OIDC dicovery
+	// TODO: do not fail on startup
 	provider, err := oidc.NewProvider(context.Background(), config.IssuerURL)
 	if err != nil {
 		return nil, err
@@ -112,14 +142,18 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		slog.Info("token refreshed successfully")
 		s.OAuth2Tokens = newToken
-		var ok bool
-		s.IDToken, ok = newToken.Extra("id_token").(string)
-		if !ok {
-			slog.Info("we got no new ID token")
+		newIDToken, ok := newToken.Extra("id_token").(string)
+		if ok {
+			s.IDToken = newIDToken
 		}
-		op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+		slog.Info("token refreshed", "access_token", newToken.AccessToken != "", "refresh_token", newToken.AccessToken != "", "id_token", newIDToken != "")
+		err = op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+		if err != nil {
+			// TODO: log in cookie handler
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	token := s.OAuth2Tokens.Type() + " " + s.OAuth2Tokens.AccessToken
@@ -148,13 +182,14 @@ func (op *OIDCProxyHandler) getSession(r *http.Request) *Session {
 	}
 	s := &Session{}
 	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
-	if ok {
-		return s
+	if !ok {
+		return nil
 	}
 	if err != nil {
 		slog.Debug("failed to obtain session", "err", err)
+		return nil
 	}
-	return nil
+	return s
 }
 
 type loginState struct {
@@ -248,6 +283,7 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	slog.Info("token successfuly issued", "refresh_token", oauth2Token.RefreshToken != "")
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
 }
 
@@ -266,4 +302,13 @@ func randString(n int) (string, error) {
 		b[i] = letterBytes[int(r[i])%(len(letterBytes)-1)]
 	}
 	return string(b), nil
+}
+
+func generateKey(length int) ([]byte, error) {
+	k := make([]byte, length)
+	_, err := io.ReadFull(rand.Reader, k)
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
 }
