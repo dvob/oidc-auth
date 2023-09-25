@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/dvob/oidc-proxy/cookie"
@@ -16,11 +17,9 @@ import (
 
 type OIDCProxyConfig struct {
 	// OAuth2 / OIDC
-	IssuerURL    string
-	ClientID     string
-	ClientSecret string
-	Scopes       []string
-	CallbackURL  string
+	Providers map[string]Provider
+
+	CallbackURL string
 
 	// handler pathes
 	LoginPath  string
@@ -60,19 +59,25 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 
 	cookieHandler := cookie.NewCookieHandler(hashKey, encKey)
 
+	providers := map[string]provider{}
 	// Perform OIDC dicovery
 	// TODO: do not fail on startup
-	provider, err := oidc.NewProvider(context.Background(), config.IssuerURL)
-	if err != nil {
-		return nil, err
-	}
-
-	oauth2Config := &oauth2.Config{
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		Endpoint:     provider.Endpoint(),
-		RedirectURL:  config.CallbackURL,
-		Scopes:       config.Scopes,
+	for name, prov := range config.Providers {
+		oidcProvider, err := oidc.NewProvider(context.Background(), prov.IssuerURL)
+		if err != nil {
+			return nil, err
+		}
+		providers[name] = provider{
+			config:   prov,
+			provider: oidcProvider,
+			oauth2Config: &oauth2.Config{
+				ClientID:     prov.ClientID,
+				ClientSecret: prov.ClientSecret,
+				Endpoint:     oidcProvider.Endpoint(),
+				Scopes:       prov.Scopes,
+				RedirectURL:  config.CallbackURL,
+			},
+		}
 	}
 
 	return &OIDCProxyHandler{
@@ -80,25 +85,30 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 		loginPath:         config.LoginPath,
 		callbackPath:      callbackURL.Path,
 		cookieHandler:     cookieHandler,
-		provider:          provider,
-		oauth2Config:      oauth2Config,
+		providers:         providers,
 		sessionCookieName: "oprox",
 		next:              next,
 	}, nil
 }
 
+type provider struct {
+	config       Provider
+	provider     *oidc.Provider
+	oauth2Config *oauth2.Config
+}
+
 type OIDCProxyHandler struct {
+	providers         map[string]provider
 	config            *OIDCProxyConfig
 	loginPath         string
 	callbackPath      string
 	cookieHandler     *cookie.CookieHandler
-	provider          *oidc.Provider
-	oauth2Config      *oauth2.Config
 	sessionCookieName string
 	next              http.Handler
 }
 
 type Session struct {
+	Provider     string
 	OAuth2Tokens *oauth2.Token
 	IDToken      string
 }
@@ -124,7 +134,8 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s := op.getSession(r)
 	if s == nil {
 		slog.Debug("no session")
-		op.LoginHandler(w, r)
+		op.RedirectToLogin(w, r)
+		//op.LoginHandler(w, r)
 		return
 	}
 
@@ -132,13 +143,22 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.OAuth2Tokens.Valid() {
 		if s.OAuth2Tokens == nil || s.OAuth2Tokens.RefreshToken == "" {
 			slog.Debug("token expired or missing and no refresh token available")
-			op.LoginHandler(w, r)
+			op.RedirectToLogin(w, r)
+			//op.LoginHandler(w, r)
 			return
 		}
-		newToken, err := op.oauth2Config.TokenSource(r.Context(), s.OAuth2Tokens).Token()
+		provider, ok := op.providers[s.Provider]
+		if !ok {
+			slog.Debug("unknown provider")
+			op.RedirectToLogin(w, r)
+			//op.LoginHandler(w, r)
+			return
+		}
+		newToken, err := provider.oauth2Config.TokenSource(r.Context(), s.OAuth2Tokens).Token()
 		if err != nil {
 			slog.Info("token refresh failed. initiate login.", "err", err)
-			op.LoginHandler(w, r)
+			op.RedirectToLogin(w, r)
+			//op.LoginHandler(w, r)
 			return
 		}
 
@@ -193,19 +213,47 @@ func (op *OIDCProxyHandler) getSession(r *http.Request) *Session {
 }
 
 type loginState struct {
-	State string
-	URI   string
+	State    string
+	URI      string
+	Provider string
+}
+
+func (op *OIDCProxyHandler) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
+	originURI := r.URL.RequestURI()
+	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, 303)
 }
 
 func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+	providerName := r.Form.Get("provider")
+	if providerName == "" {
+		w.Header().Add("Content-Type", "text/html")
+		fmt.Fprintln(w, "<h1>select login provider</h1>")
+		for name, _ := range op.providers {
+			fmt.Fprintf(w, `<div><a href="%s">%s</a></div>`, r.URL.RequestURI()+"&provider="+name, name)
+		}
+		return
+	}
+
+	provider, ok := op.providers[providerName]
+	if !ok {
+		http.Error(w, "unknown provider", http.StatusBadRequest)
+		return
+	}
+
 	const STATE_LENGTH = 20
 	state, err := randString(STATE_LENGTH)
 	if err != nil {
 		panic(err)
 	}
 	loginState := loginState{
-		State: state,
-		URI:   r.URL.RequestURI(),
+		Provider: providerName,
+		State:    state,
+		URI:      r.Form.Get("origin_uri"),
 	}
 	slog.Debug("set state cookie", "state", loginState.State, "uri", loginState.URI)
 	err = op.cookieHandler.Set(w, r, "state", loginState)
@@ -214,7 +262,7 @@ func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	redirectURL := op.oauth2Config.AuthCodeURL(loginState.State)
+	redirectURL := provider.oauth2Config.AuthCodeURL(loginState.State)
 	slog.Debug("redirect for authentication", "url", redirectURL)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
@@ -253,11 +301,18 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	oauth2Token, err := op.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"))
+	provider, ok := op.providers[loginState.Provider]
+	if !ok {
+		http.Error(w, "invalid state unknown provider", http.StatusBadRequest)
+		return
+	}
+	start := time.Now()
+	oauth2Token, err := provider.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("token exchange failed: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
+	slog.Info("token issued", "duration", time.Now().Sub(start))
 
 	// Extract the ID Token from OAuth2 token.
 	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
@@ -267,13 +322,14 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Parse and verify ID Token payload.
-	_, err = op.provider.Verifier(&oidc.Config{ClientID: op.config.ClientID}).Verify(r.Context(), rawIDToken)
+	_, err = provider.provider.Verifier(&oidc.Config{ClientID: provider.config.ClientID}).Verify(r.Context(), rawIDToken)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to validate id_token: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
 	session := &Session{
+		Provider:     loginState.Provider,
 		OAuth2Tokens: oauth2Token,
 		IDToken:      rawIDToken,
 	}
@@ -284,6 +340,11 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	slog.Info("token successfuly issued", "refresh_token", oauth2Token.RefreshToken != "")
+
+	originURI := loginState.URI
+	if originURI == "" {
+		originURI = "/"
+	}
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
 }
 

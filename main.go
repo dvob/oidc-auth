@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,28 +21,45 @@ func main() {
 	}
 }
 
+type Provider struct {
+	IssuerURL    string   `json:"issuer_url"`
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	Scopes       []string `json:"scopes"`
+
+	Name string `json:"name"`
+}
+
+type Config struct {
+	Providers map[string]Provider
+}
+
 func run() error {
 	var (
-		issuerURL     string
-		clientID      string
-		clientSecret  string
-		callbackURL   string
-		scopes        string
-		cookieHashKey string
-		cookieEncKey  string
-		listenAddr    = "localhost:8080"
-		tlsCert       string
-		tlsKey        string
+		defaultProvider = Provider{}
+		issuerURL       string
+		clientID        string
+		clientSecret    string
+		callbackURL     string
+		scopes          string
+		cookieHashKey   string
+		cookieEncKey    string
+		listenAddr      = "localhost:8080"
+		tlsCert         string
+		tlsKey          string
+		providerConfig  string
 	)
 	// proxy options
 	defaultScopes := []string{oidc.ScopeOpenID, "email", "profile", oidc.ScopeOfflineAccess}
+	flag.StringVar(&defaultProvider.IssuerURL, "issuer-url", issuerURL, "oidc issuer url")
+	flag.StringVar(&defaultProvider.ClientID, "client-id", clientID, "client id")
+	flag.StringVar(&defaultProvider.ClientSecret, "client-secret", clientSecret, "client secret id")
 	flag.StringVar(&scopes, "scopes", strings.Join(defaultScopes, ","), "a comma-seperated list of scopes")
-	flag.StringVar(&issuerURL, "issuer-url", issuerURL, "oidc issuer url")
-	flag.StringVar(&clientID, "client-id", clientID, "client id")
-	flag.StringVar(&clientSecret, "client-secret", clientSecret, "client secret id")
+
 	flag.StringVar(&callbackURL, "callback-url", callbackURL, "callback URL")
 	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
+	flag.StringVar(&providerConfig, "provider-config", providerConfig, "provider config file")
 
 	// server options
 	flag.StringVar(&listenAddr, "addr", listenAddr, "listen address")
@@ -52,14 +70,27 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
 	flag.Parse()
+	defaultProvider.Scopes = strings.Split(scopes, ",")
+
+	// TODO: we can do better
+	var providers map[string]Provider
+	if providerConfig != "" {
+		providers, err = readProviders(providerConfig)
+		if err != nil {
+			return err
+		}
+	}
+	if providers == nil {
+		providers = make(map[string]Provider)
+	}
+	providers["default"] = defaultProvider
 
 	config := &OIDCProxyConfig{
-		IssuerURL:    issuerURL,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Scopes:       strings.Split(scopes, ","),
-		CallbackURL:  callbackURL,
+		Providers: providers,
+
+		CallbackURL: callbackURL,
 
 		LoginPath:  "/login",
 		LogoutPath: "/logout",
@@ -72,10 +103,13 @@ func run() error {
 		return err
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	slog.Info("run server", "addr", listenAddr)
 	if tlsCert != "" || tlsKey != "" {
+		listenURL := fmt.Sprintf("https://%s/", listenAddr)
+		slog.Info("run server", "addr", listenURL)
 		return http.ListenAndServeTLS(listenAddr, tlsCert, tlsKey, handler)
 	} else {
+		listenURL := fmt.Sprintf("http://%s/", listenAddr)
+		slog.Info("run server", "addr", listenURL)
 		return http.ListenAndServe(listenAddr, handler)
 	}
 }
@@ -102,4 +136,19 @@ func readFlagFromEnv(fs *flag.FlagSet, prefix string) error {
 		}
 	})
 	return errors.Join(errs...)
+}
+
+func readProviders(file string) (map[string]Provider, error) {
+	rawFile, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	providers := map[string]Provider{}
+
+	err = json.Unmarshal(rawFile, &providers)
+	if err != nil {
+		return nil, err
+	}
+	return providers, nil
 }
