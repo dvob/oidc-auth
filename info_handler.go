@@ -18,11 +18,13 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 		Request  *request             `json:"request"`
 		TLS      *tls.ConnectionState `json:"tls"`
 		JWT      *jwt                 `json:"jwt"`
+		Session  *Session
 	}{}
 	info.Hostname, _ = os.Hostname()
 	info.Request = newRequest(r)
 	info.TLS = r.TLS
 	info.JWT = readJWT(r)
+	info.Session = SessionFromContext(r.Context())
 	err := json.NewEncoder(w).Encode(info)
 	if err != nil {
 		log.Println("failed to encode json:", err)

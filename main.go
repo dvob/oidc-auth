@@ -21,15 +21,6 @@ func main() {
 	}
 }
 
-type Provider struct {
-	IssuerURL    string   `json:"issuer_url"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
-
-	Name string `json:"name"`
-}
-
 type Config struct {
 	Providers map[string]Provider
 }

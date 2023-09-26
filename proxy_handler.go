@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -14,6 +15,46 @@ import (
 	"github.com/dvob/oidc-proxy/cookie"
 	"golang.org/x/oauth2"
 )
+
+type Provider struct {
+	Name         string   `json:"name"`
+	IssuerURL    string   `json:"issuer_url"`
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	Scopes       []string `json:"scopes"`
+	Endpoints
+}
+
+type Endpoints struct {
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	IntrospectionEndpoint string `json:"introspection_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
+	EndSessionEndpoint    string `json:"end_session_endpoint"`
+	RevocationEndpoint    string `json:"revocation_endpoint"`
+}
+
+// Merge sets e to e2 if e is not set
+func (e *Endpoints) Merge(e2 *Endpoints) {
+	if e.AuthorizationEndpoint == "" {
+		e.AuthorizationEndpoint = e2.AuthorizationEndpoint
+	}
+	if e.TokenEndpoint == "" {
+		e.TokenEndpoint = e2.TokenEndpoint
+	}
+	if e.IntrospectionEndpoint == "" {
+		e.IntrospectionEndpoint = e2.IntrospectionEndpoint
+	}
+	if e.UserinfoEndpoint == "" {
+		e.UserinfoEndpoint = e2.UserinfoEndpoint
+	}
+	if e.EndSessionEndpoint == "" {
+		e.EndSessionEndpoint = e2.EndSessionEndpoint
+	}
+	if e.RevocationEndpoint == "" {
+		e.RevocationEndpoint = e2.RevocationEndpoint
+	}
+}
 
 type OIDCProxyConfig struct {
 	// OAuth2 / OIDC
@@ -62,22 +103,43 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 	providers := map[string]provider{}
 	// Perform OIDC dicovery
 	// TODO: do not fail on startup
-	for name, prov := range config.Providers {
-		oidcProvider, err := oidc.NewProvider(context.Background(), prov.IssuerURL)
-		if err != nil {
-			return nil, err
-		}
-		providers[name] = provider{
-			config:   prov,
-			provider: oidcProvider,
+	for name, providerConfig := range config.Providers {
+		provider := provider{
+			config: providerConfig,
 			oauth2Config: &oauth2.Config{
-				ClientID:     prov.ClientID,
-				ClientSecret: prov.ClientSecret,
-				Endpoint:     oidcProvider.Endpoint(),
-				Scopes:       prov.Scopes,
+				ClientID:     providerConfig.ClientID,
+				ClientSecret: providerConfig.ClientSecret,
+				Scopes:       providerConfig.Scopes,
 				RedirectURL:  config.CallbackURL,
 			},
 		}
+		if providerConfig.IssuerURL != "" {
+			provider.oidcProvider, err = oidc.NewProvider(context.Background(), providerConfig.IssuerURL)
+			if err != nil {
+				return nil, err
+			}
+			endpoints := &Endpoints{}
+			err := provider.oidcProvider.Claims(endpoints)
+			if err != nil {
+				return nil, err
+			}
+			// apply explicitly set settings
+			provider.config.Endpoints.Merge(endpoints)
+		}
+
+		if provider.config.AuthorizationEndpoint == "" {
+			return nil, fmt.Errorf("authorization endpoint not set")
+		}
+		if provider.config.TokenEndpoint == "" {
+			return nil, fmt.Errorf("token endpoint not set")
+		}
+
+		provider.oauth2Config.Endpoint = oauth2.Endpoint{
+			AuthURL:  provider.config.AuthorizationEndpoint,
+			TokenURL: provider.config.TokenEndpoint,
+		}
+
+		providers[name] = provider
 	}
 
 	return &OIDCProxyHandler{
@@ -93,7 +155,7 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 
 type provider struct {
 	config       Provider
-	provider     *oidc.Provider
+	oidcProvider *oidc.Provider
 	oauth2Config *oauth2.Config
 }
 
@@ -179,7 +241,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := s.OAuth2Tokens.Type() + " " + s.OAuth2Tokens.AccessToken
 	r.Header.Add("Authorization", token)
 
-	op.next.ServeHTTP(w, r)
+	op.next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), s)))
 }
 
 type contextKey int
@@ -196,10 +258,6 @@ func ContextWithSession(parent context.Context, s *Session) context.Context {
 }
 
 func (op *OIDCProxyHandler) getSession(r *http.Request) *Session {
-	session := SessionFromContext(r.Context())
-	if session != nil {
-		return session
-	}
 	s := &Session{}
 	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
 	if !ok {
@@ -274,6 +332,62 @@ func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request)
 
 func (op *OIDCProxyHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	op.cookieHandler.Delete(w, op.sessionCookieName)
+
+	s := op.getSession(r)
+	if s == nil {
+		fmt.Fprintln(w, "logged out")
+		return
+	}
+
+	provider, ok := op.providers[s.Provider]
+	if !ok {
+		fmt.Fprintln(w, "logged out")
+		return
+	}
+	revocationURL := provider.config.RevocationEndpoint
+	slog.Debug("revoke token", "url", revocationURL)
+	if revocationURL != "" {
+		token := s.OAuth2Tokens.RefreshToken
+		if token == "" {
+			token = s.OAuth2Tokens.AccessToken
+		}
+		body := url.Values{}
+		body.Add("token", token)
+		body.Add("client_id", provider.config.ClientID)
+		body.Add("client_secret", provider.config.ClientSecret)
+		req, err := http.NewRequestWithContext(r.Context(), "POST", revocationURL, bytes.NewBufferString(body.Encode()))
+		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+		if err != nil {
+			slog.Info("failed to call revocation url", "err", err)
+			// I know I know, spaghetti...
+			goto NEXT
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			slog.Info("failed to call revocation url", "err", err)
+			// I know I know, spaghetti...
+			goto NEXT
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode > 399 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
+			slog.Info("failed to call revocation url", "status_code", resp.StatusCode, "body", string(body))
+		}
+		slog.Debug("revoked token")
+	}
+NEXT:
+
+	endSessionURL := provider.config.EndSessionEndpoint
+
+	if endSessionURL != "" {
+		q := url.Values{}
+		if s.IDToken != "" {
+			q.Add("id_token_hint", s.IDToken)
+		}
+		http.Redirect(w, r, endSessionURL+"?"+q.Encode(), 303)
+		return
+	}
 	fmt.Fprintln(w, "logged out")
 }
 
@@ -319,25 +433,29 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 	}
 	slog.Info("token issued", "duration", time.Now().Sub(start))
 
-	// Extract the ID Token from OAuth2 token.
-	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
-	if !ok {
-		http.Error(w, "missing id_token", http.StatusInternalServerError)
-		return
-	}
-
-	// Parse and verify ID Token payload.
-	_, err = provider.provider.Verifier(&oidc.Config{ClientID: provider.config.ClientID}).Verify(r.Context(), rawIDToken)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to validate id_token: %s", err.Error()), http.StatusInternalServerError)
-		return
-	}
-
 	session := &Session{
 		Provider:     loginState.Provider,
 		OAuth2Tokens: oauth2Token,
-		IDToken:      rawIDToken,
 	}
+
+	// for pure OAuth2 flows we don't have an oidcProvider and no id_tokens
+	if provider.oidcProvider != nil {
+		// Extract the ID Token from OAuth2 token.
+		rawIDToken, ok := oauth2Token.Extra("id_token").(string)
+		if !ok {
+			http.Error(w, "missing id_token", http.StatusInternalServerError)
+			return
+		}
+
+		// Parse and verify ID Token payload.
+		_, err = provider.oidcProvider.Verifier(&oidc.Config{ClientID: provider.config.ClientID}).Verify(r.Context(), rawIDToken)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to validate id_token: %s", err.Error()), http.StatusInternalServerError)
+			return
+		}
+		session.IDToken = rawIDToken
+	}
+
 	err = op.cookieHandler.Set(w, r, op.sessionCookieName, session)
 	if err != nil {
 		slog.Info("failed to set cookie", "err", err)
