@@ -49,6 +49,7 @@ func run() error {
 		tlsKey          string
 		providerConfig  string
 	)
+
 	// proxy options
 	defaultScopes := []string{oidc.ScopeOpenID, "email", "profile", oidc.ScopeOfflineAccess}
 	flag.StringVar(&defaultProvider.IssuerURL, "issuer-url", issuerURL, "oidc issuer url")
@@ -74,6 +75,8 @@ func run() error {
 	flag.Parse()
 	defaultProvider.Scopes = strings.Split(scopes, ",")
 
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	// TODO: we can do better
 	var providers map[string]Provider
 	if providerConfig != "" {
@@ -85,7 +88,21 @@ func run() error {
 	if providers == nil {
 		providers = make(map[string]Provider)
 	}
-	providers["default"] = defaultProvider
+
+	if defaultProvider.ClientID != "" {
+		providers["default"] = defaultProvider
+	}
+
+	if len(providers) == 0 {
+		return fmt.Errorf("no configured providers")
+	}
+
+	for name, provider := range providers {
+		if provider.Name != "" {
+			name = fmt.Sprintf("%s (%s)", name, provider.Name)
+		}
+		slog.Info("configured provider", "name", name, "issuer_url", provider.IssuerURL)
+	}
 
 	config := &OIDCProxyConfig{
 		Providers: providers,
@@ -102,7 +119,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	if tlsCert != "" || tlsKey != "" {
 		listenURL := fmt.Sprintf("https://%s/", listenAddr)
 		slog.Info("run server", "addr", listenURL)

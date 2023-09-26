@@ -232,9 +232,14 @@ func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request)
 	providerName := r.Form.Get("provider")
 	if providerName == "" {
 		w.Header().Add("Content-Type", "text/html")
+		w.Header().Add("Cache-Control", "no-cache")
 		fmt.Fprintln(w, "<h1>select login provider</h1>")
-		for name, _ := range op.providers {
-			fmt.Fprintf(w, `<div><a href="%s">%s</a></div>`, r.URL.RequestURI()+"&provider="+name, name)
+		for name, provider := range op.providers {
+			fullName := provider.config.Name
+			if fullName == "" {
+				fullName = name
+			}
+			fmt.Fprintf(w, `<div><a href="%s">%s</a></div>`, r.URL.RequestURI()+"&provider="+name, fullName)
 		}
 		return
 	}
