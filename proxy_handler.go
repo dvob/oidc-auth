@@ -228,7 +228,6 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		newSession, err := op.refreshToken(r.Context(), s)
 		if err != nil {
 			slog.Info("token refresh failed", "err", err)
-			// TODO: probably only on GET
 			op.RedirectToLogin(w, r)
 			return
 		}
@@ -280,6 +279,11 @@ type loginState struct {
 }
 
 func (op *OIDCProxyHandler) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
+	// TODO: where do we really want to handle this
+	if !(r.Method == "GET" || r.Method == "HEAD") {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
 	originURI := r.URL.RequestURI()
 	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, 303)
 }
