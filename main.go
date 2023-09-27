@@ -106,10 +106,13 @@ func run() error {
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),
 	}
-	handler, err := NewOIDCProxyHandler(config, http.HandlerFunc(infoHandler))
+	var handler http.Handler
+	handler, err = NewOIDCProxyHandler(config, http.HandlerFunc(infoHandler))
 	if err != nil {
 		return err
 	}
+
+	handler = newLogHandler(handler)
 
 	if tlsCert != "" || tlsKey != "" {
 		listenURL := fmt.Sprintf("https://%s/", listenAddr)
