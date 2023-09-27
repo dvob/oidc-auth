@@ -14,17 +14,28 @@ import (
 func infoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json")
 	info := struct {
-		Hostname string               `json:"hostname"`
-		Request  *request             `json:"request"`
-		TLS      *tls.ConnectionState `json:"tls"`
-		JWT      *jwt                 `json:"jwt"`
-		Session  *Session
+		Hostname   string               `json:"hostname"`
+		Request    *request             `json:"request"`
+		TLS        *tls.ConnectionState `json:"tls"`
+		JWT        *jwt                 `json:"jwt"`
+		Session    *Session
+		SessionJWT struct {
+			AccessToken  *jwt `json:"access_token"`
+			RefreshToken *jwt `json:"refresh_token"`
+			IDToken      *jwt `json:"id_token"`
+		} `json:"session_jwt"`
 	}{}
 	info.Hostname, _ = os.Hostname()
 	info.Request = newRequest(r)
 	info.TLS = r.TLS
-	info.JWT = readJWT(r)
-	info.Session = SessionFromContext(r.Context())
+	info.JWT = readJWT(readBearer(r))
+	s := SessionFromContext(r.Context())
+	info.Session = s
+	if s != nil {
+		info.SessionJWT.IDToken = readJWT(s.IDToken)
+		info.SessionJWT.AccessToken = readJWT(s.OAuth2Tokens.AccessToken)
+		info.SessionJWT.RefreshToken = readJWT(s.OAuth2Tokens.RefreshToken)
+	}
 	err := json.NewEncoder(w).Encode(info)
 	if err != nil {
 		log.Println("failed to encode json:", err)
@@ -60,9 +71,12 @@ type jwt struct {
 	Error    string         `json:"error,omitempty"`
 }
 
-func readJWT(r *http.Request) *jwt {
-	_, token, found := strings.Cut(r.Header.Get("Authorization"), " ")
-	if !found {
+func readBearer(r *http.Request) string {
+	_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	return token
+}
+func readJWT(token string) *jwt {
+	if token == "" {
 		return nil
 	}
 

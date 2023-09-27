@@ -82,6 +82,7 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 	encKey := config.EncryptKey
 
 	if len(hashKey) == 0 {
+		slog.Warn("no cookie hash key configuerd. sessions will not be persistent accross restarts.")
 		hashKey, err = generateKey(32)
 		if err != nil {
 			return nil, err
@@ -192,7 +193,9 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// handle auth
+	// ----------- //
+	// handle auth //
+	// ----------- //
 	s := op.getSession(r)
 	if s == nil {
 		slog.Debug("no session")
@@ -201,35 +204,33 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Temporary test
+	if r.URL.Path == "/refresh" {
+		newSession, err := op.refreshToken(r.Context(), s)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
+		err = op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+		if err != nil {
+			// TODO: log in cookie handler
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			return
+		}
+		s = newSession
+	}
+
 	// invalid token try refresh otherwise run login handler
 	if !s.OAuth2Tokens.Valid() {
-		if s.OAuth2Tokens == nil || s.OAuth2Tokens.RefreshToken == "" {
-			slog.Debug("token expired or missing and no refresh token available")
-			op.RedirectToLogin(w, r)
-			//op.LoginHandler(w, r)
-			return
-		}
-		provider, ok := op.providers[s.Provider]
-		if !ok {
-			slog.Debug("unknown provider")
-			op.RedirectToLogin(w, r)
-			//op.LoginHandler(w, r)
-			return
-		}
-		newToken, err := provider.oauth2Config.TokenSource(r.Context(), s.OAuth2Tokens).Token()
+		newSession, err := op.refreshToken(r.Context(), s)
 		if err != nil {
-			slog.Info("token refresh failed. initiate login.", "err", err)
+			slog.Info("token refresh failed", "err", err)
+			// TODO: probably only on GET
 			op.RedirectToLogin(w, r)
-			//op.LoginHandler(w, r)
 			return
 		}
-
-		s.OAuth2Tokens = newToken
-		newIDToken, ok := newToken.Extra("id_token").(string)
-		if ok {
-			s.IDToken = newIDToken
-		}
-		slog.Info("token refreshed", "access_token", newToken.AccessToken != "", "refresh_token", newToken.AccessToken != "", "id_token", newIDToken != "")
+		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
 		err = op.cookieHandler.Set(w, r, op.sessionCookieName, s)
 		if err != nil {
 			// TODO: log in cookie handler
@@ -279,6 +280,32 @@ type loginState struct {
 func (op *OIDCProxyHandler) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	originURI := r.URL.RequestURI()
 	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, 303)
+}
+
+func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Session, error) {
+	if s.OAuth2Tokens == nil || s.OAuth2Tokens.RefreshToken == "" {
+		return nil, fmt.Errorf("token expired or missing and no refresh token available")
+	}
+	provider, ok := op.providers[s.Provider]
+	if !ok {
+		return nil, fmt.Errorf("unknown provider %s", s.Provider)
+	}
+	newToken, err := provider.oauth2Config.TokenSource(ctx, s.OAuth2Tokens).Token()
+	if err != nil {
+		return nil, fmt.Errorf("token refresh failed: %w", err)
+	}
+
+	newIDToken, ok := newToken.Extra("id_token").(string)
+	if !ok {
+		slog.Info("token refresh did not return new id_token")
+		newIDToken = s.IDToken
+	}
+
+	return &Session{
+		Provider:     s.Provider,
+		OAuth2Tokens: newToken,
+		IDToken:      newIDToken,
+	}, nil
 }
 
 func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
