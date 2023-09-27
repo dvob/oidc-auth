@@ -17,11 +17,13 @@ import (
 )
 
 type Provider struct {
-	Name         string   `json:"name"`
-	IssuerURL    string   `json:"issuer_url"`
-	ClientID     string   `json:"client_id"`
-	ClientSecret string   `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
+	Name                   string     `json:"name"`
+	IssuerURL              string     `json:"issuer_url"`
+	ClientID               string     `json:"client_id"`
+	ClientSecret           string     `json:"client_secret"`
+	Scopes                 []string   `json:"scopes"`
+	AuthorizationParameter url.Values `json:"authorization_parameters"`
+	TokenParameters        url.Values `json:"token_parameters"`
 	Endpoints
 }
 
@@ -352,9 +354,19 @@ func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	redirectURL := provider.oauth2Config.AuthCodeURL(loginState.State)
+	redirectURL := provider.oauth2Config.AuthCodeURL(loginState.State, urlValuesIntoOpts(provider.config.AuthorizationParameter)...)
 	slog.Debug("redirect for authentication", "url", redirectURL)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
+}
+
+func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
+	opts := []oauth2.AuthCodeOption{}
+	for parameter, values := range urlValues {
+		for _, value := range values {
+			opts = append(opts, oauth2.SetAuthURLParam(parameter, value))
+		}
+	}
+	return opts
 }
 
 func (op *OIDCProxyHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -453,7 +465,7 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	start := time.Now()
-	oauth2Token, err := provider.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"))
+	oauth2Token, err := provider.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"), urlValuesIntoOpts(provider.config.TokenParameters)...)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("token exchange failed: %s", err.Error()), http.StatusInternalServerError)
 		return
