@@ -1,14 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -307,6 +308,8 @@ func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Sess
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %s", s.Provider)
 	}
+
+	// we deliberately only set the refresh_token to force the renewal
 	token := &oauth2.Token{
 		RefreshToken: s.OAuth2Tokens.RefreshToken,
 	}
@@ -329,12 +332,7 @@ func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Sess
 }
 
 func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseForm()
-	if err != nil {
-		http.Error(w, "failed to parse form", http.StatusBadRequest)
-		return
-	}
-	providerName := r.Form.Get("provider")
+	providerName := r.URL.Query().Get("provider")
 	if providerName == "" {
 		w.Header().Add("Content-Type", "text/html")
 		w.Header().Add("Cache-Control", "no-cache")
@@ -387,7 +385,51 @@ func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
 	return opts
 }
 
+// https://www.rfc-editor.org/rfc/rfc7009.html#section-2.1
+func (op *OIDCProxyHandler) revokeToken(ctx context.Context, provider *provider, s *Session) error {
+	if provider.config.RevocationEndpoint == "" {
+		return fmt.Errorf("provider has no revocation endpoint set")
+	}
+
+	token := s.OAuth2Tokens.RefreshToken
+	if token == "" {
+		token = s.OAuth2Tokens.AccessToken
+	}
+
+	body := url.Values{}
+	body.Add("token", token)
+	body.Add("client_id", provider.config.ClientID)
+	body.Add("client_secret", provider.config.ClientSecret)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", provider.config.RevocationEndpoint, strings.NewReader(body.Encode()))
+	if err != nil {
+		return fmt.Errorf("revocation failed: %w", err)
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("revocation failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 399 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
+		return fmt.Errorf("revocation failed: returned status code %d with body '%s'", resp.StatusCode, body)
+	}
+	return nil
+}
+
+func (op *OIDCProxyHandler) rpInitiatedLogout(w http.ResponseWriter, r *http.Request, provider *provider, s *Session) {
+	q := url.Values{}
+	if s.IDToken != "" {
+		q.Add("id_token_hint", s.IDToken)
+	}
+	http.Redirect(w, r, provider.config.EndSessionEndpoint+"?"+q.Encode(), http.StatusSeeOther)
+}
+
 func (op *OIDCProxyHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	// delete cookie
 	op.cookieHandler.Delete(w, op.sessionCookieName)
 
 	s := op.getSession(r)
@@ -401,48 +443,16 @@ func (op *OIDCProxyHandler) LogoutHandler(w http.ResponseWriter, r *http.Request
 		fmt.Fprintln(w, "logged out")
 		return
 	}
-	revocationURL := provider.config.RevocationEndpoint
-	slog.Debug("revoke token", "url", revocationURL)
-	if revocationURL != "" {
-		token := s.OAuth2Tokens.RefreshToken
-		if token == "" {
-			token = s.OAuth2Tokens.AccessToken
-		}
-		body := url.Values{}
-		body.Add("token", token)
-		body.Add("client_id", provider.config.ClientID)
-		body.Add("client_secret", provider.config.ClientSecret)
-		req, err := http.NewRequestWithContext(r.Context(), "POST", revocationURL, bytes.NewBufferString(body.Encode()))
-		req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-		if err != nil {
-			slog.Info("failed to call revocation url", "err", err)
-			// I know I know, spaghetti...
-			goto NEXT
-		}
 
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			slog.Info("failed to call revocation url", "err", err)
-			// I know I know, spaghetti...
-			goto NEXT
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode > 399 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
-			slog.Info("failed to call revocation url", "status_code", resp.StatusCode, "body", string(body))
-		}
-		slog.Debug("revoked token")
+	// revoke
+	revocationURL := provider.config.RevocationEndpoint
+	if revocationURL != "" {
+		op.revokeToken(r.Context(), &provider, s)
 	}
-NEXT:
 
 	endSessionURL := provider.config.EndSessionEndpoint
-
 	if endSessionURL != "" {
-		q := url.Values{}
-		if s.IDToken != "" {
-			q.Add("id_token_hint", s.IDToken)
-		}
-		http.Redirect(w, r, endSessionURL+"?"+q.Encode(), http.StatusSeeOther)
+		op.rpInitiatedLogout(w, r, &provider, s)
 		return
 	}
 	fmt.Fprintln(w, "logged out")
@@ -528,21 +538,14 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
 }
 
-const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-func randString(n int) (string, error) {
-	r := make([]byte, n)
-	_, err := rand.Read(r)
+func randString(randomBytesLen int) (string, error) {
+	randomBytes := make([]byte, randomBytesLen)
+	_, err := rand.Read(randomBytes)
 	if err != nil {
 		return "", err
 	}
 
-	b := make([]byte, n)
-	for i := range b {
-		// TODO: does this work?
-		b[i] = letterBytes[int(r[i])%(len(letterBytes)-1)]
-	}
-	return string(b), nil
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
 
 func generateKey(length int) ([]byte, error) {
