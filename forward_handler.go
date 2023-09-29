@@ -13,20 +13,34 @@ func newForwardHandler(upstream string) (http.Handler, error) {
 		return nil, err
 	}
 
-	http11Upstream := httputil.NewSingleHostReverseProxy(targetURL)
+	rewriteFunc := func(pr *httputil.ProxyRequest) {
+		pr.SetURL(targetURL)
+		pr.SetXForwarded()
+		// pr.Out.Host = pr.In.Host
+	}
+
+	// http11Upstream := httputil.NewSingleHostReverseProxy(targetURL)
 	http11Transport := http.DefaultTransport.(*http.Transport).Clone()
 	http11Transport.ForceAttemptHTTP2 = false
 	http11Transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
 	http11Transport.TLSClientConfig = &tls.Config{}
 	http11Transport.TLSClientConfig.InsecureSkipVerify = true
-	http11Upstream.Transport = http11Transport
 
-	defaultUpstream := httputil.NewSingleHostReverseProxy(targetURL)
+	http11Upstream := &httputil.ReverseProxy{
+		Rewrite:   rewriteFunc,
+		Transport: http11Transport,
+	}
+
+	// defaultUpstream := httputil.NewSingleHostReverseProxy(targetURL)
+
 	defaultTransport := http.DefaultTransport.(*http.Transport).Clone()
 	defaultTransport.TLSClientConfig = &tls.Config{
 		InsecureSkipVerify: true,
 	}
-	defaultUpstream.Transport = defaultTransport
+	defaultUpstream := &httputil.ReverseProxy{
+		Rewrite:   rewriteFunc,
+		Transport: defaultTransport,
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s := SessionFromContext(r.Context())

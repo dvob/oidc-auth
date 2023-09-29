@@ -118,6 +118,7 @@ func run() error {
 
 		LoginPath:  "/login",
 		LogoutPath: "/logout",
+		DebugPath:  "/debug",
 
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),

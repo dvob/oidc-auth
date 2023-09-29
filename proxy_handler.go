@@ -67,6 +67,7 @@ type OIDCProxyConfig struct {
 	// handler pathes
 	LoginPath  string
 	LogoutPath string
+	DebugPath  string
 
 	// secure cookie
 	HashKey    []byte
@@ -149,6 +150,7 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 		config:            config,
 		loginPath:         config.LoginPath,
 		callbackPath:      callbackURL.Path,
+		debugPath:         config.DebugPath,
 		cookieHandler:     cookieHandler,
 		providers:         providers,
 		sessionCookieName: "oprox",
@@ -167,6 +169,7 @@ type OIDCProxyHandler struct {
 	config            *OIDCProxyConfig
 	loginPath         string
 	callbackPath      string
+	debugPath         string
 	cookieHandler     *cookie.CookieHandler
 	sessionCookieName string
 	next              http.Handler
@@ -214,7 +217,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
-		err = op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+		err = op.cookieHandler.Set(w, r, op.sessionCookieName, newSession)
 		if err != nil {
 			// TODO: log in cookie handler
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -232,7 +235,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
-		err = op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+		err = op.cookieHandler.Set(w, r, op.sessionCookieName, newSession)
 		if err != nil {
 			// TODO: log in cookie handler
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -240,10 +243,18 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token := s.OAuth2Tokens.Type() + " " + s.OAuth2Tokens.AccessToken
-	r.Header.Add("Authorization", token)
+	r = r.WithContext(ContextWithSession(r.Context(), s))
 
-	op.next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), s)))
+	if op.debugPath != "" && r.URL.Path == op.debugPath {
+		// TODO: remove this from here
+		token := s.OAuth2Tokens.Type() + " " + s.OAuth2Tokens.AccessToken
+		r.Header.Add("Authorization", token)
+
+		infoHandler(w, r)
+		return
+	}
+
+	op.next.ServeHTTP(w, r)
 }
 
 type contextKey int
@@ -296,7 +307,10 @@ func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Sess
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %s", s.Provider)
 	}
-	newToken, err := provider.oauth2Config.TokenSource(ctx, s.OAuth2Tokens).Token()
+	token := &oauth2.Token{
+		RefreshToken: s.OAuth2Tokens.RefreshToken,
+	}
+	newToken, err := provider.oauth2Config.TokenSource(ctx, token).Token()
 	if err != nil {
 		return nil, fmt.Errorf("token refresh failed: %w", err)
 	}
