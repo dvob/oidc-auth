@@ -14,7 +14,7 @@ type CookieHandler struct {
 func NewCookieHandler(hashKey, encryptKey []byte) *CookieHandler {
 	sc := securecookie.New(hashKey, encryptKey)
 	sc.MaxLength(0)
-	//sc.SetSerializer(newCompressSerializer())
+	// sc.SetSerializer(newCompressSerializer())
 	return &CookieHandler{
 		securecookie: sc,
 		cookieOptions: &http.Cookie{

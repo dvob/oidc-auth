@@ -75,6 +75,7 @@ func readBearer(r *http.Request) string {
 	_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
 	return token
 }
+
 func readJWT(token string) *jwt {
 	if token == "" {
 		return nil

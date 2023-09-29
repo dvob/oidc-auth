@@ -13,14 +13,14 @@ func newLogHandler(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(sw, r)
 		logger.LogAttrs(r.Context(), slog.LevelInfo,
-			"", //TODO: what should be the message
+			"", // TODO: what should be the message
 			slog.String("src", r.RemoteAddr),
 			slog.String("proto", r.Proto),
 			slog.String("method", r.Method),
 			slog.String("host", r.Host),
 			slog.String("uri", r.RequestURI),
 			slog.Int("code", sw.statusCode),
-			slog.Duration("duration", time.Now().Sub(start)),
+			slog.Duration("duration", time.Since(start)),
 			slog.Int("bytes", sw.bytesWritten),
 		)
 	})
@@ -38,7 +38,7 @@ type statusResponseWriter struct {
 func newStatusResponseWriter(w http.ResponseWriter) *statusResponseWriter {
 	return &statusResponseWriter{
 		ResponseWriter: w,
-		statusCode: 200,
+		statusCode:     200,
 	}
 }
 

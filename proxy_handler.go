@@ -202,7 +202,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		slog.Debug("no session")
 		op.RedirectToLogin(w, r)
-		//op.LoginHandler(w, r)
+		// op.LoginHandler(w, r)
 		return
 	}
 
@@ -285,7 +285,7 @@ func (op *OIDCProxyHandler) RedirectToLogin(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	originURI := r.URL.RequestURI()
-	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, 303)
+	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, http.StatusSeeOther)
 }
 
 func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Session, error) {
@@ -428,7 +428,7 @@ NEXT:
 		if s.IDToken != "" {
 			q.Add("id_token_hint", s.IDToken)
 		}
-		http.Redirect(w, r, endSessionURL+"?"+q.Encode(), 303)
+		http.Redirect(w, r, endSessionURL+"?"+q.Encode(), http.StatusSeeOther)
 		return
 	}
 	fmt.Fprintln(w, "logged out")
@@ -474,7 +474,7 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, fmt.Sprintf("token exchange failed: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
-	slog.Info("token issued", "duration", time.Now().Sub(start))
+	slog.Info("token issued", "duration", time.Since(start))
 
 	session := &Session{
 		Provider:     loginState.Provider,

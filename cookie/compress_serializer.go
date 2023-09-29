@@ -45,6 +45,7 @@ func (c *compressSerializer) Serialize(src interface{}) ([]byte, error) {
 
 var _ securecookie.Serializer = &compressSerializer{}
 
+//lint:ignore U1000 might use later
 func newCompressSerializer() *compressSerializer {
 	return &compressSerializer{
 		inner: securecookie.GobEncoder{},

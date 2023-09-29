@@ -1,0 +1,65 @@
+name: main
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.21'
+
+      - uses: actions/checkout@v3
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -v ./...
+
+      - name: Install Tools
+        run: |
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install mvdan.cc/gofumpt@latest
+
+      - name: Lint
+        run: |
+          staticcheck ./...
+          go vet ./...
+          test -z "$( gofumpt -l ./ )"
+
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.21'
+
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Tools
+        run: |
+          go install github.com/dvob/sko@latest
+          echo "$( go env GOPATH )/bin" >> $GITHUB_PATH
+
+      - name: Docker Hub Release
+        env:
+          SKO_USER: dvob
+          SKO_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+            sko -tag "${GITHUB_REF##*/}" -tag latest dvob/oidc-proxy .
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v4
+        with:
+          args: release --rm-dist
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
