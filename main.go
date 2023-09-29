@@ -13,6 +13,11 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 
+var (
+	version = "n/a"
+	commit  = "n/a"
+)
+
 func main() {
 	err := run()
 	if err != nil {
@@ -38,7 +43,9 @@ func run() error {
 		listenAddr      = "localhost:8080"
 		tlsCert         string
 		tlsKey          string
+		upstream        string
 		providerConfig  string
+		showVersion     bool
 	)
 
 	// proxy options
@@ -53,10 +60,14 @@ func run() error {
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
 	flag.StringVar(&providerConfig, "provider-config", providerConfig, "provider config file")
 
+	flag.StringVar(&upstream, "upstream", upstream, "url of the upsream. if not configured debug page is shown.")
+
 	// server options
 	flag.StringVar(&listenAddr, "addr", listenAddr, "listen address")
 	flag.StringVar(&tlsCert, "tls-cert", tlsCert, "tls cert")
 	flag.StringVar(&tlsKey, "tls-key", tlsKey, "tls key")
+
+	flag.BoolVar(&showVersion, "version", false, "show version")
 
 	err := readFlagFromEnv(flag.CommandLine, "OIDC_PROXY_")
 	if err != nil {
@@ -64,7 +75,11 @@ func run() error {
 	}
 
 	flag.Parse()
-	defaultProvider.Scopes = strings.Split(scopes, ",")
+
+	if showVersion {
+		fmt.Printf("version=%s commit=%s\n", version, commit)
+		os.Exit(0)
+	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
@@ -81,6 +96,7 @@ func run() error {
 	}
 
 	if defaultProvider.ClientID != "" {
+		defaultProvider.Scopes = strings.Split(scopes, ",")
 		providers["default"] = defaultProvider
 	}
 
@@ -106,8 +122,16 @@ func run() error {
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),
 	}
-	var handler http.Handler
-	handler, err = NewOIDCProxyHandler(config, http.HandlerFunc(infoHandler))
+
+	var handler http.Handler = http.HandlerFunc(infoHandler)
+	if upstream != "" {
+		handler, err = newForwardHandler(upstream)
+		if err != nil {
+			return err
+		}
+	}
+
+	handler, err = NewOIDCProxyHandler(config, handler)
 	if err != nil {
 		return err
 	}
