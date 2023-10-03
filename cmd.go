@@ -1,4 +1,4 @@
-package main
+package oidcproxy
 
 import (
 	"encoding/json"
@@ -18,19 +18,7 @@ var (
 	commit  = "n/a"
 )
 
-func main() {
-	err := run()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-}
-
-type Config struct {
-	Providers map[string]Provider
-}
-
-func run() error {
+func Run() error {
 	var (
 		defaultProvider = Provider{}
 		issuerURL       string
