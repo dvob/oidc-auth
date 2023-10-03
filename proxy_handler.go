@@ -61,6 +61,7 @@ func (e *Endpoints) Merge(e2 *Endpoints) {
 
 type OIDCProxyConfig struct {
 	// OAuth2 / OIDC
+	// TODO: do not use map otherwise we have to configure name twice
 	Providers map[string]Provider
 
 	CallbackURL string
@@ -76,6 +77,9 @@ type OIDCProxyConfig struct {
 }
 
 func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxyHandler, error) {
+	if config.CallbackURL == "" {
+		return nil, fmt.Errorf("callback url not set")
+	}
 	callbackURL, err := url.Parse(config.CallbackURL)
 	if err != nil {
 		return nil, err
@@ -109,6 +113,9 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 	// Perform OIDC dicovery
 	// TODO: do not fail on startup
 	for name, providerConfig := range config.Providers {
+		if providerConfig.ClientID == "" {
+			return nil, fmt.Errorf("client id missing in configuration")
+		}
 		provider := provider{
 			config: providerConfig,
 			oauth2Config: &oauth2.Config{
@@ -183,10 +190,19 @@ type Session struct {
 }
 
 func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	session := op.getSession(r)
+	if op.debugPath != "" && r.URL.Path == op.debugPath {
+		r = r.WithContext(ContextWithSession(r.Context(), session))
+		infoHandler(w, r)
+		return
+	}
+
+	// handle logout
 	if r.URL.Path == op.config.LogoutPath {
 		op.LogoutHandler(w, r)
 		return
 	}
+
 	// handle login
 	if r.URL.Path == op.loginPath {
 		op.LoginHandler(w, r)
@@ -202,8 +218,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ----------- //
 	// handle auth //
 	// ----------- //
-	s := op.getSession(r)
-	if s == nil {
+	if session == nil {
 		slog.Debug("no session")
 		op.RedirectToLogin(w, r)
 		// op.LoginHandler(w, r)
@@ -212,7 +227,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Temporary test
 	if r.URL.Path == "/refresh" {
-		newSession, err := op.refreshToken(r.Context(), s)
+		newSession, err := op.refreshToken(r.Context(), session)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -224,12 +239,12 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		s = newSession
+		session = newSession
 	}
 
 	// invalid token try refresh otherwise run login handler
-	if !s.OAuth2Tokens.Valid() {
-		newSession, err := op.refreshToken(r.Context(), s)
+	if !session.OAuth2Tokens.Valid() {
+		newSession, err := op.refreshToken(r.Context(), session)
 		if err != nil {
 			slog.Info("token refresh failed", "err", err)
 			op.RedirectToLogin(w, r)
@@ -244,16 +259,7 @@ func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	r = r.WithContext(ContextWithSession(r.Context(), s))
-
-	if op.debugPath != "" && r.URL.Path == op.debugPath {
-		// TODO: remove this from here
-		token := s.OAuth2Tokens.Type() + " " + s.OAuth2Tokens.AccessToken
-		r.Header.Add("Authorization", token)
-
-		infoHandler(w, r)
-		return
-	}
+	r = r.WithContext(ContextWithSession(r.Context(), session))
 
 	op.next.ServeHTTP(w, r)
 }
