@@ -9,74 +9,36 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
-	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/dvob/oidc-proxy/cookie"
-	"golang.org/x/oauth2"
 )
 
-type Provider struct {
-	Name                   string     `json:"name"`
-	IssuerURL              string     `json:"issuer_url"`
-	ClientID               string     `json:"client_id"`
-	ClientSecret           string     `json:"client_secret"`
-	Scopes                 []string   `json:"scopes"`
-	AuthorizationParameter url.Values `json:"authorization_parameters"`
-	TokenParameters        url.Values `json:"token_parameters"`
-	Endpoints
-}
-
-type Endpoints struct {
-	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
-	IntrospectionEndpoint string `json:"introspection_endpoint"`
-	UserinfoEndpoint      string `json:"userinfo_endpoint"`
-	EndSessionEndpoint    string `json:"end_session_endpoint"`
-	RevocationEndpoint    string `json:"revocation_endpoint"`
-}
-
-// Merge sets e to e2 if e is not set
-func (e *Endpoints) Merge(e2 *Endpoints) {
-	if e.AuthorizationEndpoint == "" {
-		e.AuthorizationEndpoint = e2.AuthorizationEndpoint
-	}
-	if e.TokenEndpoint == "" {
-		e.TokenEndpoint = e2.TokenEndpoint
-	}
-	if e.IntrospectionEndpoint == "" {
-		e.IntrospectionEndpoint = e2.IntrospectionEndpoint
-	}
-	if e.UserinfoEndpoint == "" {
-		e.UserinfoEndpoint = e2.UserinfoEndpoint
-	}
-	if e.EndSessionEndpoint == "" {
-		e.EndSessionEndpoint = e2.EndSessionEndpoint
-	}
-	if e.RevocationEndpoint == "" {
-		e.RevocationEndpoint = e2.RevocationEndpoint
-	}
-}
-
-type OIDCProxyConfig struct {
+type Config struct {
 	// OAuth2 / OIDC
 	// TODO: do not use map otherwise we have to configure name twice
-	Providers map[string]Provider
+	Providers []ProviderConfig
 
 	CallbackURL string
 
-	// handler pathes
-	LoginPath  string
+	// LoginPath initiates the login flow
+	LoginPath string
+
+	// LogoutPath deletes cookie, revokes token and redirect to IDPs logout
+	// URL if available
 	LogoutPath string
-	DebugPath  string
+
+	// DebugPath shows info about the current session
+	DebugPath string
+
+	// RefreshPath performs an explicit refresh
+	RefreshPath string
 
 	// secure cookie
 	HashKey    []byte
 	EncryptKey []byte
 }
 
-func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxyHandler, error) {
+func NewAuthenticator(ctx context.Context, config *Config) (*authenticator, error) {
 	if config.CallbackURL == "" {
 		return nil, fmt.Errorf("callback url not set")
 	}
@@ -89,179 +51,181 @@ func NewOIDCProxyHandler(config *OIDCProxyConfig, next http.Handler) (*OIDCProxy
 	hashKey := config.HashKey
 	encKey := config.EncryptKey
 
-	if len(hashKey) == 0 {
-		slog.Warn("no cookie hash key configuerd. sessions will not be persistent accross restarts.")
-		hashKey, err = generateKey(32)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(encKey) == 0 {
-		encKey = nil
-	}
-
 	if !(len(hashKey) == 32 || len(hashKey) == 64) {
-		return nil, fmt.Errorf("hash key has invalid key length. a length of 32 or 64 is required")
+		return nil, fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 	if !(len(encKey) == 0 || len(encKey) == 32 || len(encKey) == 64) {
-		return nil, fmt.Errorf("hash key has invalid key length. a length of 32 or 64 is required")
+		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 
 	cookieHandler := cookie.NewCookieHandler(hashKey, encKey)
 
+	// Setup providers
 	providers := map[string]provider{}
-	// Perform OIDC dicovery
-	// TODO: do not fail on startup
-	for name, providerConfig := range config.Providers {
-		if providerConfig.ClientID == "" {
-			return nil, fmt.Errorf("client id missing in configuration")
-		}
-		provider := provider{
-			config: providerConfig,
-			oauth2Config: &oauth2.Config{
-				ClientID:     providerConfig.ClientID,
-				ClientSecret: providerConfig.ClientSecret,
-				Scopes:       providerConfig.Scopes,
-				RedirectURL:  config.CallbackURL,
-			},
-		}
-		if providerConfig.IssuerURL != "" {
-			provider.oidcProvider, err = oidc.NewProvider(context.Background(), providerConfig.IssuerURL)
-			if err != nil {
-				return nil, err
-			}
-			endpoints := &Endpoints{}
-			err := provider.oidcProvider.Claims(endpoints)
-			if err != nil {
-				return nil, err
-			}
-			// apply explicitly set settings
-			provider.config.Endpoints.Merge(endpoints)
+	for _, providerConfig := range config.Providers {
+		if providerConfig.CallbackURL == "" {
+			providerConfig.CallbackURL = config.CallbackURL
 		}
 
-		if provider.config.AuthorizationEndpoint == "" {
-			return nil, fmt.Errorf("authorization endpoint not set")
-		}
-		if provider.config.TokenEndpoint == "" {
-			return nil, fmt.Errorf("token endpoint not set")
+		provider, err := newProvider(ctx, providerConfig)
+		if err != nil {
+			return nil, err
 		}
 
-		provider.oauth2Config.Endpoint = oauth2.Endpoint{
-			AuthURL:  provider.config.AuthorizationEndpoint,
-			TokenURL: provider.config.TokenEndpoint,
+		if existing, ok := providers[provider.config.Identifier]; ok {
+			return nil, fmt.Errorf("duplicate provider %s (%s) and %s (%s)", existing.config.Name, existing.config.IssuerURL, provider.config.Name, provider.config.IssuerURL)
 		}
 
-		providers[name] = provider
+		providers[provider.config.Identifier] = *provider
 	}
 
-	return &OIDCProxyHandler{
-		config:            config,
-		loginPath:         config.LoginPath,
-		callbackPath:      callbackURL.Path,
-		debugPath:         config.DebugPath,
-		cookieHandler:     cookieHandler,
-		providers:         providers,
-		sessionCookieName: "oprox",
-		next:              next,
+	return &authenticator{
+		config: config,
+
+		loginPath:    config.LoginPath,
+		callbackPath: callbackURL.Path,
+		debugPath:    config.DebugPath,
+		refreshPath:  config.RefreshPath,
+
+		cookieHandler:        cookieHandler,
+		sessionCookieName:    "oprox",
+		loginStateCookieName: "state",
+
+		providers: providers,
 	}, nil
 }
 
-type provider struct {
-	config       Provider
-	oidcProvider *oidc.Provider
-	oauth2Config *oauth2.Config
-}
+type authenticator struct {
+	config *Config
 
-type OIDCProxyHandler struct {
-	providers         map[string]provider
-	config            *OIDCProxyConfig
-	loginPath         string
-	callbackPath      string
-	debugPath         string
-	cookieHandler     *cookie.CookieHandler
-	sessionCookieName string
-	next              http.Handler
+	loginPath    string
+	callbackPath string
+	debugPath    string
+	refreshPath  string
+
+	cookieHandler        *cookie.CookieHandler
+	sessionCookieName    string
+	loginStateCookieName string
+
+	providers map[string]provider
 }
 
 type Session struct {
-	Provider     string
-	OAuth2Tokens *oauth2.Token
-	IDToken      string
+	ProviderIdentifier string
+	Tokens
 }
 
-func (op *OIDCProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	session := op.getSession(r)
-	if op.debugPath != "" && r.URL.Path == op.debugPath {
-		r = r.WithContext(ContextWithSession(r.Context(), session))
-		infoHandler(w, r)
-		return
+func (s *Session) Valid() bool {
+	if s == nil {
+		return false
 	}
+	return s.Tokens.Valid()
+}
 
-	// handle logout
-	if r.URL.Path == op.config.LogoutPath {
-		op.LogoutHandler(w, r)
-		return
-	}
-
-	// handle login
-	if r.URL.Path == op.loginPath {
-		op.LoginHandler(w, r)
-		return
-	}
-
-	// handle callback
-	if r.URL.Path == op.callbackPath {
-		op.CallbackHandler(w, r)
-		return
-	}
-
-	// ----------- //
-	// handle auth //
-	// ----------- //
-	if session == nil {
-		slog.Debug("no session")
-		op.RedirectToLogin(w, r)
-		// op.LoginHandler(w, r)
-		return
-	}
-
-	// Temporary test
-	if r.URL.Path == "/refresh" {
-		newSession, err := op.refreshToken(r.Context(), session)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
+func (op *authenticator) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if op.debugPath != "" && r.URL.Path == op.debugPath {
+			op.DebugHandler(w, r)
 			return
 		}
-		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
-		err = op.cookieHandler.Set(w, r, op.sessionCookieName, newSession)
-		if err != nil {
-			// TODO: log in cookie handler
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+
+		// handle logout
+		if r.URL.Path == op.config.LogoutPath {
+			op.LogoutHandler(w, r)
 			return
 		}
-		session = newSession
-	}
 
-	// invalid token try refresh otherwise run login handler
-	if !session.OAuth2Tokens.Valid() {
-		newSession, err := op.refreshToken(r.Context(), session)
-		if err != nil {
-			slog.Info("token refresh failed", "err", err)
+		// handle login
+		if r.URL.Path == op.loginPath {
+			op.LoginHandler(w, r)
+			return
+		}
+
+		// handle callback
+		if r.URL.Path == op.callbackPath {
+			op.CallbackHandler(w, r)
+			return
+		}
+
+		// handle refresh
+		if r.URL.Path == op.refreshPath {
+			op.HandleRefresh(w, r)
+			return
+		}
+
+		// check session
+		currentSession, provider := op.getSession(w, r)
+		if currentSession == nil {
+			slog.Debug("no session available: initiate login")
 			op.RedirectToLogin(w, r)
 			return
 		}
-		slog.Info("token refreshed", "access_token", newSession.OAuth2Tokens.AccessToken != "", "refresh_token", newSession.OAuth2Tokens.RefreshToken != "")
-		err = op.cookieHandler.Set(w, r, op.sessionCookieName, newSession)
-		if err != nil {
-			// TODO: log in cookie handler
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			return
+
+		// run silent refresh or redirect to login if session expired
+		if !currentSession.Valid() {
+			if currentSession.RefreshToken == "" {
+				slog.Debug("no refresh token available: initiate login")
+				op.RedirectToLogin(w, r)
+			}
+
+			newTokens, err := provider.refresh(r.Context(), &currentSession.Tokens)
+			if err != nil {
+				slog.Info("token refresh failed", "err", err)
+				op.RedirectToLogin(w, r)
+				return
+			}
+
+			newSession := &Session{
+				ProviderIdentifier: currentSession.ProviderIdentifier,
+				Tokens:             *newTokens,
+			}
+
+			slog.Info("token refreshed", "access_token", newSession.AccessToken != "", "refresh_token", newSession.RefreshToken != "", "id_token", newSession.IDToken != "")
+
+			err = op.setSession(w, r, newSession)
+			if err != nil {
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+				return
+			}
+
+			currentSession = newSession
 		}
+
+		r = r.WithContext(ContextWithSession(r.Context(), currentSession))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// HandleRefresh handles exlicit refresh which prints the outcome to the
+// response writer.
+func (op *authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	currentSession, provider := op.getSession(w, r)
+	if currentSession == nil {
+		http.Error(w, "no session", http.StatusUnauthorized)
+		return
 	}
 
-	r = r.WithContext(ContextWithSession(r.Context(), session))
+	newTokens, err := provider.refresh(r.Context(), &currentSession.Tokens)
+	if err != nil {
+		slog.Info("token refresh failed", "err", err)
+		http.Error(w, "refresh failed", http.StatusInternalServerError)
+		return
+	}
+	newSession := &Session{
+		ProviderIdentifier: currentSession.ProviderIdentifier,
+		Tokens:             *newTokens,
+	}
 
-	op.next.ServeHTTP(w, r)
+	slog.Info("token refreshed", "access_token", newSession.AccessToken != "", "refresh_token", newSession.RefreshToken != "", "id_token", newSession.IDToken != "")
+
+	err = op.setSession(w, r, newSession)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Fprintln(w, "token refresh successful")
+	return
 }
 
 type contextKey int
@@ -277,210 +241,201 @@ func ContextWithSession(parent context.Context, s *Session) context.Context {
 	return context.WithValue(parent, sessionContextKey, s)
 }
 
-func (op *OIDCProxyHandler) getSession(r *http.Request) *Session {
+func (op *authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *provider) {
 	s := &Session{}
 	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
+	if !ok {
+		return nil, nil
+	}
+	if err != nil {
+		slog.Info("failed to decode session", "err", err)
+		op.deleteSession(w)
+		return nil, nil
+	}
+	provider, ok := op.providers[s.ProviderIdentifier]
+	if !ok {
+		slog.Info("session with unknown provider", "identifier", s.ProviderIdentifier)
+		op.deleteSession(w)
+		return nil, nil
+	}
+	return s, &provider
+}
+
+func (op *authenticator) setSession(w http.ResponseWriter, r *http.Request, s *Session) error {
+	if s == nil {
+		return fmt.Errorf("no session to set")
+	}
+	if s.Tokens.AccessToken == "" {
+		return fmt.Errorf("no access token")
+	}
+
+	err := op.cookieHandler.Set(w, r, op.sessionCookieName, s)
+	if err != nil {
+		slog.Error("failed to encode session state")
+	}
+	return err
+}
+
+func (op *authenticator) deleteSession(w http.ResponseWriter) {
+	op.cookieHandler.Delete(w, op.sessionCookieName)
+}
+
+func (op *authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
+	loginState := &LoginState{}
+	ok, err := op.cookieHandler.Get(r, op.loginStateCookieName, loginState)
 	if !ok {
 		return nil
 	}
 	if err != nil {
-		slog.Debug("failed to obtain session", "err", err)
+		slog.Info("failed to decode login state", "err", err)
+		op.deleteLoginState(w)
 		return nil
 	}
-	return s
+	return loginState
 }
 
-type loginState struct {
-	State    string
-	URI      string
-	Provider string
+func (op *authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l *LoginState) error {
+	err := op.cookieHandler.Set(w, r, op.loginStateCookieName, l)
+	if err != nil {
+		slog.Error("failed to encode login state", "err", err)
+	}
+	return err
 }
 
-func (op *OIDCProxyHandler) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
-	// TODO: where do we really want to handle this
+func (op *authenticator) deleteLoginState(w http.ResponseWriter) {
+	op.cookieHandler.Delete(w, op.loginStateCookieName)
+}
+
+type LoginState struct {
+	State              string
+	URI                string
+	ProviderIdentifier string
+}
+
+// RedirectToLogin remembers the current uri to redirect you back there after
+// the login flow and redirects you to the login handler.
+func (op *authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	if !(r.Method == "GET" || r.Method == "HEAD") {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 	originURI := r.URL.RequestURI()
-	http.Redirect(w, r, op.loginPath+"?origin_uri="+originURI, http.StatusSeeOther)
+	op.setLoginState(w, r, &LoginState{URI: originURI})
+	http.Redirect(w, r, op.loginPath, http.StatusSeeOther)
 }
 
-func (op *OIDCProxyHandler) refreshToken(ctx context.Context, s *Session) (*Session, error) {
-	if s.OAuth2Tokens == nil || s.OAuth2Tokens.RefreshToken == "" {
-		return nil, fmt.Errorf("token expired or missing and no refresh token available")
-	}
-	provider, ok := op.providers[s.Provider]
-	if !ok {
-		return nil, fmt.Errorf("unknown provider %s", s.Provider)
+// LoginHandler initiates the state and redirects the request to the providers
+// authorization URL.
+func (op *authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	providerIdentifier := r.URL.Query().Get("provider")
+
+	// if provider is not set and there is only one configured we use that one
+	if len(op.providers) == 1 && providerIdentifier == "" {
+		// this will only loop once.
+		for name := range op.providers {
+			providerIdentifier = name
+		}
 	}
 
-	// we deliberately only set the refresh_token to force the renewal
-	token := &oauth2.Token{
-		RefreshToken: s.OAuth2Tokens.RefreshToken,
-	}
-	newToken, err := provider.oauth2Config.TokenSource(ctx, token).Token()
-	if err != nil {
-		return nil, fmt.Errorf("token refresh failed: %w", err)
-	}
-
-	newIDToken, ok := newToken.Extra("id_token").(string)
-	if !ok {
-		slog.Info("token refresh did not return new id_token")
-		newIDToken = s.IDToken
-	}
-
-	return &Session{
-		Provider:     s.Provider,
-		OAuth2Tokens: newToken,
-		IDToken:      newIDToken,
-	}, nil
-}
-
-func (op *OIDCProxyHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
-	providerName := r.URL.Query().Get("provider")
-	if providerName == "" {
+	if providerIdentifier == "" {
 		w.Header().Add("Content-Type", "text/html")
 		w.Header().Add("Cache-Control", "no-cache")
 		fmt.Fprintln(w, "<h1>select login provider</h1>")
-		for name, provider := range op.providers {
+		for _, provider := range op.providers {
 			fullName := provider.config.Name
 			if fullName == "" {
-				fullName = name
+				fullName = provider.config.IssuerURL
 			}
-			fmt.Fprintf(w, `<div><a href="%s">%s</a></div>`, r.URL.RequestURI()+"&provider="+name, fullName)
+			fmt.Fprintf(w, `<div><a href="%s">%s (%s)</a></div>`, op.loginPath+"?provider="+provider.config.Identifier, fullName, provider.config.Identifier)
 		}
 		return
 	}
 
-	provider, ok := op.providers[providerName]
+	provider, ok := op.providers[providerIdentifier]
 	if !ok {
 		http.Error(w, "unknown provider", http.StatusBadRequest)
 		return
 	}
 
-	const STATE_LENGTH = 20
-	state, err := randString(STATE_LENGTH)
+	const STATE_LENGTH = 10
+	stateStr, err := randString(STATE_LENGTH)
 	if err != nil {
-		panic(err)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		slog.Error("faild to generate random state", "err", err)
+		return
 	}
-	loginState := loginState{
-		Provider: providerName,
-		State:    state,
-		URI:      r.Form.Get("origin_uri"),
+
+	state := op.getLoginState(w, r)
+	if state == nil {
+		state = &LoginState{
+			ProviderIdentifier: providerIdentifier,
+			State:              stateStr,
+		}
+	} else {
+		state.ProviderIdentifier = providerIdentifier
+		state.State = stateStr
 	}
-	slog.Debug("set state cookie", "state", loginState.State, "uri", loginState.URI)
-	err = op.cookieHandler.Set(w, r, "state", loginState)
+
+	err = op.setLoginState(w, r, state)
 	if err != nil {
-		slog.Debug("failed to set cookie", "err", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	redirectURL := provider.oauth2Config.AuthCodeURL(loginState.State, urlValuesIntoOpts(provider.config.AuthorizationParameter)...)
+
+	redirectURL := provider.authCodeURL(r.Context(), state.State)
 	slog.Debug("redirect for authentication", "url", redirectURL)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
 
-func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
-	opts := []oauth2.AuthCodeOption{}
-	for parameter, values := range urlValues {
-		for _, value := range values {
-			opts = append(opts, oauth2.SetAuthURLParam(parameter, value))
-		}
-	}
-	return opts
-}
-
-// https://www.rfc-editor.org/rfc/rfc7009.html#section-2.1
-func (op *OIDCProxyHandler) revokeToken(ctx context.Context, provider *provider, s *Session) error {
-	if provider.config.RevocationEndpoint == "" {
-		return fmt.Errorf("provider has no revocation endpoint set")
+// LogoutHandler deletes the session cookies, revokes the token (if supportd by
+// the provider) and redirects to the end_session_uri of the provider (if
+// supported by the provider).
+//
+// TODO: generalize logged out view
+func (op *authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	session, provider := op.getSession(w, r)
+	if session == nil {
+		fmt.Fprintln(w, "logged out")
+		return
 	}
 
-	token := s.OAuth2Tokens.RefreshToken
-	if token == "" {
-		token = s.OAuth2Tokens.AccessToken
-	}
-
-	body := url.Values{}
-	body.Add("token", token)
-	body.Add("client_id", provider.config.ClientID)
-	body.Add("client_secret", provider.config.ClientSecret)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", provider.config.RevocationEndpoint, strings.NewReader(body.Encode()))
-	if err != nil {
-		return fmt.Errorf("revocation failed: %w", err)
-	}
-	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("revocation failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode > 399 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1000))
-		return fmt.Errorf("revocation failed: returned status code %d with body '%s'", resp.StatusCode, body)
-	}
-	return nil
-}
-
-func (op *OIDCProxyHandler) rpInitiatedLogout(w http.ResponseWriter, r *http.Request, provider *provider, s *Session) {
-	q := url.Values{}
-	if s.IDToken != "" {
-		q.Add("id_token_hint", s.IDToken)
-	}
-	http.Redirect(w, r, provider.config.EndSessionEndpoint+"?"+q.Encode(), http.StatusSeeOther)
-}
-
-func (op *OIDCProxyHandler) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	// delete cookie
-	op.cookieHandler.Delete(w, op.sessionCookieName)
-
-	s := op.getSession(r)
-	if s == nil {
-		fmt.Fprintln(w, "logged out")
-		return
-	}
-
-	provider, ok := op.providers[s.Provider]
-	if !ok {
-		fmt.Fprintln(w, "logged out")
-		return
-	}
+	op.deleteSession(w)
 
 	// revoke
 	revocationURL := provider.config.RevocationEndpoint
 	if revocationURL != "" {
-		op.revokeToken(r.Context(), &provider, s)
+		err := provider.revoke(r.Context(), session.RefreshToken)
+		if err != nil {
+			slog.Warn("failed to revoke token", "err", err)
+		}
 	}
 
+	// logut
 	endSessionURL := provider.config.EndSessionEndpoint
 	if endSessionURL != "" {
-		op.rpInitiatedLogout(w, r, &provider, s)
+		logoutURL := provider.rpInitiatedLogoutURL(r.Context(), &session.Tokens)
+		http.Redirect(w, r, logoutURL, http.StatusSeeOther)
 		return
 	}
 	fmt.Fprintln(w, "logged out")
 }
 
-func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Request) {
-	var loginState loginState
-	ok, err := op.cookieHandler.Get(r, "state", &loginState)
-	if !ok {
+// CallbackHandler handles the callback from the provider. It does the following things:
+//   - checks the state
+//   - gets the tokens from the provider using the authorization code grant
+//   - initiates the sessoin (set cookies)
+//   - redirect back to the uri you came from if set
+func (op *authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) {
+	loginState := op.getLoginState(w, r)
+	if loginState == nil {
 		http.Error(w, "state cookie missing", http.StatusBadRequest)
 		return
 	}
-	if err != nil {
-		slog.Info("invalid state cookie", "err", err)
-		op.cookieHandler.Delete(w, "state")
-		http.Error(w, "invalid state cookie", http.StatusBadRequest)
-		return
-	}
-	op.cookieHandler.Delete(w, "state")
 
-	state := r.FormValue("state")
+	op.deleteLoginState(w)
 
+	state := r.URL.Query().Get("state")
 	if state != loginState.State {
 		http.Error(w, "state missmatch", http.StatusInternalServerError)
 		return
@@ -493,53 +448,37 @@ func (op *OIDCProxyHandler) CallbackHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	provider, ok := op.providers[loginState.Provider]
+	provider, ok := op.providers[loginState.ProviderIdentifier]
 	if !ok {
 		http.Error(w, "invalid state unknown provider", http.StatusBadRequest)
 		return
 	}
-	start := time.Now()
-	oauth2Token, err := provider.oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"), urlValuesIntoOpts(provider.config.TokenParameters)...)
+	tokens, err := provider.exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("token exchange failed: %s", err.Error()), http.StatusInternalServerError)
+		slog.Info("token exchange failed", "err", err)
+		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
-	slog.Info("token issued", "duration", time.Since(start))
 
 	session := &Session{
-		Provider:     loginState.Provider,
-		OAuth2Tokens: oauth2Token,
+		ProviderIdentifier: loginState.ProviderIdentifier,
+		Tokens:             *tokens,
 	}
 
-	// for pure OAuth2 flows we don't have an oidcProvider and no id_tokens
-	if provider.oidcProvider != nil {
-		// Extract the ID Token from OAuth2 token.
-		rawIDToken, ok := oauth2Token.Extra("id_token").(string)
-		if !ok {
-			http.Error(w, "missing id_token", http.StatusInternalServerError)
-			return
-		}
-
-		// Parse and verify ID Token payload.
-		_, err = provider.oidcProvider.Verifier(&oidc.Config{ClientID: provider.config.ClientID}).Verify(r.Context(), rawIDToken)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to validate id_token: %s", err.Error()), http.StatusInternalServerError)
-			return
-		}
-		session.IDToken = rawIDToken
-	}
-
-	err = op.cookieHandler.Set(w, r, op.sessionCookieName, session)
+	err = op.setSession(w, r, session)
 	if err != nil {
-		slog.Info("failed to set cookie", "err", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	slog.Info("token successfuly issued", "refresh_token", oauth2Token.RefreshToken != "")
+
+	slog.Info("token successfuly issued", "refresh_token", tokens.RefreshToken != "")
 
 	originURI := loginState.URI
 	if originURI == "" {
-		originURI = "/"
+		// TODO: redirect to session info or make configurable
+		//originURI = "/"
+		fmt.Fprintln(w, "successfully logged in")
+		return
 	}
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
 }

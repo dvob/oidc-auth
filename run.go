@@ -1,6 +1,7 @@
 package oidcproxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,7 +21,7 @@ var (
 
 func Run() error {
 	var (
-		defaultProvider = Provider{}
+		defaultProvider = ProviderConfig{}
 		issuerURL       string
 		clientID        string
 		clientSecret    string
@@ -71,70 +72,70 @@ func Run() error {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	// TODO: we can do better
-	var providers map[string]Provider
+	providers := []ProviderConfig{}
 	if providerConfig != "" {
 		providers, err = readProviders(providerConfig)
 		if err != nil {
 			return err
 		}
 	}
-	if providers == nil {
-		providers = make(map[string]Provider)
-	}
 
 	if defaultProvider.ClientID != "" {
 		defaultProvider.Scopes = strings.Split(scopes, ",")
-		providers["default"] = defaultProvider
+		providers = append(providers, defaultProvider)
 	}
 
 	if len(providers) == 0 {
 		return fmt.Errorf("no configured providers")
 	}
 
-	for name, provider := range providers {
-		if provider.Name != "" {
-			name = fmt.Sprintf("%s (%s)", name, provider.Name)
-		}
-		slog.Info("configured provider", "name", name, "issuer_url", provider.IssuerURL)
+	for _, p := range providers {
+		fmt.Println(p.IssuerURL)
 	}
 
-	config := &OIDCProxyConfig{
+	config := &Config{
 		Providers: providers,
 
 		CallbackURL: callbackURL,
 
-		LoginPath:  "/login",
-		LogoutPath: "/logout",
-		DebugPath:  "/debug",
+		LoginPath:   "/login",
+		LogoutPath:  "/logout",
+		DebugPath:   "/debug",
+		RefreshPath: "/refresh",
 
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),
 	}
 
-	var handler http.Handler = http.HandlerFunc(infoHandler)
-	if upstream != "" {
-		handler, err = newForwardHandler(upstream)
-		if err != nil {
-			return err
-		}
-	}
-
-	handler, err = NewOIDCProxyHandler(config, handler)
+	authenticator, err := NewAuthenticator(context.Background(), config)
 	if err != nil {
 		return err
 	}
 
-	handler = newLogHandler(handler)
+	var inner http.Handler
+	if upstream != "" {
+		inner, err = newForwardHandler(upstream)
+		if err != nil {
+			return err
+		}
+	} else {
+		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintln(w, "hello")
+		})
+	}
+
+	authenticated := authenticator.Handler(inner)
+
+	logger := newLogHandler(authenticated)
 
 	if tlsCert != "" || tlsKey != "" {
 		listenURL := fmt.Sprintf("https://%s/", listenAddr)
 		slog.Info("run server", "addr", listenURL)
-		return http.ListenAndServeTLS(listenAddr, tlsCert, tlsKey, handler)
+		return http.ListenAndServeTLS(listenAddr, tlsCert, tlsKey, logger)
 	} else {
 		listenURL := fmt.Sprintf("http://%s/", listenAddr)
 		slog.Info("run server", "addr", listenURL)
-		return http.ListenAndServe(listenAddr, handler)
+		return http.ListenAndServe(listenAddr, logger)
 	}
 }
 
@@ -162,17 +163,17 @@ func readFlagFromEnv(fs *flag.FlagSet, prefix string) error {
 	return errors.Join(errs...)
 }
 
-func readProviders(file string) (map[string]Provider, error) {
+func readProviders(file string) ([]ProviderConfig, error) {
 	rawFile, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 
-	providers := map[string]Provider{}
+	providers := []ProviderConfig{}
 
 	err = json.Unmarshal(rawFile, &providers)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read providers", err)
 	}
 	return providers, nil
 }

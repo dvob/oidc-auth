@@ -4,20 +4,30 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
 
-func infoHandler(w http.ResponseWriter, r *http.Request) {
+// DebugHandler returns information about the session including the tokens.
+func (op *authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
+	currentSession, provider := op.getSession(w, r)
+
+	var providerConfig *ProviderConfig
+	if provider != nil {
+		c := provider.config
+		c.ClientSecret = "REDACTED"
+		providerConfig = &c
+	}
 	w.Header().Add("Content-Type", "application/json")
 	info := struct {
 		Hostname   string               `json:"hostname"`
 		Request    *request             `json:"request"`
 		TLS        *tls.ConnectionState `json:"tls"`
 		JWT        *jwt                 `json:"jwt"`
+		Provider   *ProviderConfig      `json:"provider_config"`
 		Session    *Session
 		SessionJWT struct {
 			AccessToken  *jwt `json:"access_token"`
@@ -25,20 +35,20 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 			IDToken      *jwt `json:"id_token"`
 		} `json:"session_jwt"`
 	}{}
+	info.Provider = providerConfig
 	info.Hostname, _ = os.Hostname()
 	info.Request = newRequest(r)
 	info.TLS = r.TLS
 	info.JWT = readJWT(readBearer(r))
-	s := SessionFromContext(r.Context())
-	info.Session = s
-	if s != nil {
-		info.SessionJWT.IDToken = readJWT(s.IDToken)
-		info.SessionJWT.AccessToken = readJWT(s.OAuth2Tokens.AccessToken)
-		info.SessionJWT.RefreshToken = readJWT(s.OAuth2Tokens.RefreshToken)
+	info.Session = currentSession
+	if currentSession != nil {
+		info.SessionJWT.AccessToken = readJWT(currentSession.AccessToken)
+		info.SessionJWT.RefreshToken = readJWT(currentSession.RefreshToken)
+		info.SessionJWT.IDToken = readJWT(currentSession.IDToken)
 	}
 	err := json.NewEncoder(w).Encode(info)
 	if err != nil {
-		log.Println("failed to encode json:", err)
+		slog.Info("failed to encode json in info handler", "err", err)
 	}
 }
 
