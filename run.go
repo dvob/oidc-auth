@@ -173,7 +173,7 @@ func readProviders(file string) ([]ProviderConfig, error) {
 
 	err = json.Unmarshal(rawFile, &providers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read providers", err)
+		return nil, fmt.Errorf("failed to read providers: %w", err)
 	}
 	return providers, nil
 }
