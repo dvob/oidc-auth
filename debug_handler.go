@@ -12,7 +12,7 @@ import (
 )
 
 // DebugHandler returns information about the session including the tokens.
-func (op *authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
 	currentSession, provider := op.getSession(w, r)
 
 	var providerConfig *ProviderConfig

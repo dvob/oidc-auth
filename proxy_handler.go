@@ -38,7 +38,7 @@ type Config struct {
 	EncryptKey []byte
 }
 
-func NewAuthenticator(ctx context.Context, config *Config) (*authenticator, error) {
+func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
 	if config.CallbackURL == "" {
 		return nil, fmt.Errorf("callback url not set")
 	}
@@ -79,7 +79,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*authenticator, erro
 		providers[provider.config.Identifier] = *provider
 	}
 
-	return &authenticator{
+	return &Authenticator{
 		config: config,
 
 		loginPath:    config.LoginPath,
@@ -95,7 +95,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*authenticator, erro
 	}, nil
 }
 
-type authenticator struct {
+type Authenticator struct {
 	config *Config
 
 	loginPath    string
@@ -122,7 +122,7 @@ func (s *Session) Valid() bool {
 	return s.Tokens.Valid()
 }
 
-func (op *authenticator) Handler(next http.Handler) http.Handler {
+func (op *Authenticator) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if op.debugPath != "" && r.URL.Path == op.debugPath {
 			op.DebugHandler(w, r)
@@ -198,7 +198,7 @@ func (op *authenticator) Handler(next http.Handler) http.Handler {
 
 // HandleRefresh handles exlicit refresh which prints the outcome to the
 // response writer.
-func (op *authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	currentSession, provider := op.getSession(w, r)
 	if currentSession == nil {
 		http.Error(w, "no session", http.StatusUnauthorized)
@@ -241,7 +241,7 @@ func ContextWithSession(parent context.Context, s *Session) context.Context {
 	return context.WithValue(parent, sessionContextKey, s)
 }
 
-func (op *authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *provider) {
+func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *provider) {
 	s := &Session{}
 	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
 	if !ok {
@@ -261,7 +261,7 @@ func (op *authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Se
 	return s, &provider
 }
 
-func (op *authenticator) setSession(w http.ResponseWriter, r *http.Request, s *Session) error {
+func (op *Authenticator) setSession(w http.ResponseWriter, r *http.Request, s *Session) error {
 	if s == nil {
 		return fmt.Errorf("no session to set")
 	}
@@ -276,11 +276,11 @@ func (op *authenticator) setSession(w http.ResponseWriter, r *http.Request, s *S
 	return err
 }
 
-func (op *authenticator) deleteSession(w http.ResponseWriter) {
+func (op *Authenticator) deleteSession(w http.ResponseWriter) {
 	op.cookieHandler.Delete(w, op.sessionCookieName)
 }
 
-func (op *authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
+func (op *Authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
 	loginState := &LoginState{}
 	ok, err := op.cookieHandler.Get(r, op.loginStateCookieName, loginState)
 	if !ok {
@@ -294,7 +294,7 @@ func (op *authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *
 	return loginState
 }
 
-func (op *authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l *LoginState) error {
+func (op *Authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l *LoginState) error {
 	err := op.cookieHandler.Set(w, r, op.loginStateCookieName, l)
 	if err != nil {
 		slog.Error("failed to encode login state", "err", err)
@@ -302,7 +302,7 @@ func (op *authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l
 	return err
 }
 
-func (op *authenticator) deleteLoginState(w http.ResponseWriter) {
+func (op *Authenticator) deleteLoginState(w http.ResponseWriter) {
 	op.cookieHandler.Delete(w, op.loginStateCookieName)
 }
 
@@ -314,7 +314,7 @@ type LoginState struct {
 
 // RedirectToLogin remembers the current uri to redirect you back there after
 // the login flow and redirects you to the login handler.
-func (op *authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request) {
 	if !(r.Method == "GET" || r.Method == "HEAD") {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
@@ -326,7 +326,7 @@ func (op *authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request)
 
 // LoginHandler initiates the state and redirects the request to the providers
 // authorization URL.
-func (op *authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	providerIdentifier := r.URL.Query().Get("provider")
 
 	// if provider is not set and there is only one configured we use that one
@@ -392,7 +392,7 @@ func (op *authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 // supported by the provider).
 //
 // TODO: generalize logged out view
-func (op *authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	session, provider := op.getSession(w, r)
 	if session == nil {
 		fmt.Fprintln(w, "logged out")
@@ -426,7 +426,7 @@ func (op *authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 //   - gets the tokens from the provider using the authorization code grant
 //   - initiates the sessoin (set cookies)
 //   - redirect back to the uri you came from if set
-func (op *authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	loginState := op.getLoginState(w, r)
 	if loginState == nil {
 		http.Error(w, "state cookie missing", http.StatusBadRequest)
