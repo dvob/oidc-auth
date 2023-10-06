@@ -3,25 +3,43 @@ package oidcproxy
 import (
 	"context"
 	"crypto/rand"
+	"embed"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/dvob/oidc-proxy/cookie"
 )
 
 type Config struct {
 	// OAuth2 / OIDC
-	// TODO: do not use map otherwise we have to configure name twice
 	Providers []ProviderConfig
 
+	// CallbackURL is the url under which the callback path is reachable
 	CallbackURL string
+
+	// PostLogoutRedirectURI is the URL where you get redirected after an
+	// RP initiated logut
+	PostLogoutRediretURI string
 
 	// LoginPath initiates the login flow
 	LoginPath string
+
+	// CallbackPath handle the oauth2 callback. It defaults to the path of
+	// the CallbackURL if not specified.
+	CallbackPath string
+
+	// SessionInfoPath
+	SessionInfoPath string
+
+	// RefreshPath performs an explicit refresh
+	RefreshPath string
 
 	// LogoutPath deletes cookie, revokes token and redirect to IDPs logout
 	// URL if available
@@ -30,21 +48,35 @@ type Config struct {
 	// DebugPath shows info about the current session
 	DebugPath string
 
-	// RefreshPath performs an explicit refresh
-	RefreshPath string
-
 	// secure cookie
 	HashKey    []byte
 	EncryptKey []byte
 }
 
+//go:embed templates/*
+var templates embed.FS
+
 func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
+	// templates
+	sessionInfoTemplate, err := template.ParseFS(templates, "templates/session_info.tmpl")
+	if err != nil {
+		return nil, err
+	}
+
+	// validate and prepare config
 	if config.CallbackURL == "" {
+		// TODO: default to current host /callback path
 		return nil, fmt.Errorf("callback url not set")
 	}
 	callbackURL, err := url.Parse(config.CallbackURL)
 	if err != nil {
 		return nil, err
+	}
+
+	// derive callbackPath from callbackURL if not explicitly set
+	callbackPath := config.CallbackPath
+	if callbackPath == "" {
+		callbackPath = callbackURL.Path
 	}
 
 	// Setup Cookiehandler
@@ -67,6 +99,10 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 			providerConfig.CallbackURL = config.CallbackURL
 		}
 
+		if providerConfig.PostLogoutRedirectURI == "" {
+			providerConfig.PostLogoutRedirectURI = config.PostLogoutRediretURI
+		}
+
 		provider, err := newProvider(ctx, providerConfig)
 		if err != nil {
 			return nil, err
@@ -80,32 +116,36 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	}
 
 	return &Authenticator{
-		config: config,
-
-		loginPath:    config.LoginPath,
-		callbackPath: callbackURL.Path,
-		debugPath:    config.DebugPath,
-		refreshPath:  config.RefreshPath,
+		loginPath:       config.LoginPath,
+		callbackPath:    callbackURL.Path,
+		sessionInfoPath: config.SessionInfoPath,
+		refreshPath:     config.RefreshPath,
+		logoutPath:      config.LogoutPath,
+		debugPath:       config.DebugPath,
 
 		cookieHandler:        cookieHandler,
 		sessionCookieName:    "oprox",
 		loginStateCookieName: "state",
+
+		sessionInfoTemplate: *sessionInfoTemplate,
 
 		providers: providers,
 	}, nil
 }
 
 type Authenticator struct {
-	config *Config
-
-	loginPath    string
-	callbackPath string
-	debugPath    string
-	refreshPath  string
+	loginPath       string
+	callbackPath    string
+	sessionInfoPath string
+	refreshPath     string
+	logoutPath      string
+	debugPath       string
 
 	cookieHandler        *cookie.CookieHandler
 	sessionCookieName    string
 	loginStateCookieName string
+
+	sessionInfoTemplate template.Template
 
 	providers map[string]provider
 }
@@ -124,13 +164,18 @@ func (s *Session) Valid() bool {
 
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == op.sessionInfoPath {
+			op.SessionInfoHandler(w, r)
+			return
+		}
+
 		if op.debugPath != "" && r.URL.Path == op.debugPath {
 			op.DebugHandler(w, r)
 			return
 		}
 
 		// handle logout
-		if r.URL.Path == op.config.LogoutPath {
+		if r.URL.Path == op.logoutPath {
 			op.LogoutHandler(w, r)
 			return
 		}
@@ -149,7 +194,7 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 		// handle refresh
 		if r.URL.Path == op.refreshPath {
-			op.HandleRefresh(w, r)
+			op.RefreshHandler(w, r)
 			return
 		}
 
@@ -196,9 +241,64 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 	})
 }
 
-// HandleRefresh handles exlicit refresh which prints the outcome to the
+func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {
+	currentSession, provider := op.getSession(w, r)
+
+	sessionInfo := struct {
+		// ? just return 401 instead of 200 with logged_in=false
+		LoggedIn bool `json:"logged_in"`
+
+		// ? only return expiry and let theses infos for the debug endpoint only
+		AccessTokenAvailable  bool `json:"access_token_available"`
+		RefreshTokenAvailable bool `json:"refresh_token_available"`
+		IDTokenAvailable      bool `json:"id_token_available"`
+
+		Expiry   time.Time `json:"expiry,omitempty"`
+		Provider string    `json:"provider"`
+	}{
+		LoggedIn:              currentSession.Valid(),
+		AccessTokenAvailable:  currentSession.Valid() && currentSession.AccessToken != "",
+		RefreshTokenAvailable: currentSession.Valid() && currentSession.RefreshToken != "",
+		IDTokenAvailable:      currentSession.Valid() && currentSession.IDToken != "",
+	}
+	if currentSession != nil {
+		sessionInfo.Expiry = currentSession.Expiry
+		// TODO: use implement Stringer for provider config
+		sessionInfo.Provider = provider.config.Name
+	}
+
+	w.Header().Add("Cache-Control", "no-cache")
+	contentType := r.Header.Get("Accept")
+	if contentType == "application/json" {
+		if currentSession == nil {
+			http.Error(w, "no session", http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Add("Content-Type", "application/json")
+		out, err := json.Marshal(sessionInfo)
+		if err != nil {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			slog.Error("failed to marshal session info", "err", err)
+			return
+		}
+		w.Write(out)
+		return
+	}
+
+	// for all other content types we return html
+	w.Header().Add("Content-Type", "text/html")
+	err := op.sessionInfoTemplate.Execute(w, sessionInfo)
+	if err != nil {
+		slog.Error("failed to execute session info template", "err", err)
+	}
+}
+
+// RefreshHandler handles exlicit refresh which prints the outcome to the
 // response writer.
-func (op *Authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) {
+	// TODO: return proper json response on accept json
+	// TODO: on HTML set falsh message
 	currentSession, provider := op.getSession(w, r)
 	if currentSession == nil {
 		http.Error(w, "no session", http.StatusUnauthorized)
@@ -211,6 +311,7 @@ func (op *Authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "refresh failed", http.StatusInternalServerError)
 		return
 	}
+
 	newSession := &Session{
 		ProviderIdentifier: currentSession.ProviderIdentifier,
 		Tokens:             *newTokens,
@@ -224,8 +325,7 @@ func (op *Authenticator) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintln(w, "token refresh successful")
-	return
+	http.Redirect(w, r, op.sessionInfoPath, http.StatusSeeOther)
 }
 
 type contextKey int
@@ -475,9 +575,9 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 
 	originURI := loginState.URI
 	if originURI == "" {
-		// TODO: redirect to session info or make configurable
-		//originURI = "/"
-		fmt.Fprintln(w, "successfully logged in")
+		// TODO: make configurable
+		// TODO: make base url configurable
+		http.Redirect(w, r, op.sessionInfoPath, http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)

@@ -26,6 +26,7 @@ func Run() error {
 		clientID        string
 		clientSecret    string
 		callbackURL     string
+		postLogoutURL   string
 		scopes          string
 		cookieHashKey   string
 		cookieEncKey    string
@@ -45,6 +46,7 @@ func Run() error {
 	flag.StringVar(&scopes, "scopes", strings.Join(defaultScopes, ","), "a comma-seperated list of scopes")
 
 	flag.StringVar(&callbackURL, "callback-url", callbackURL, "callback URL")
+	flag.StringVar(&postLogoutURL, "post-logout-url", postLogoutURL, "post logout redirect uri")
 	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
 	flag.StringVar(&providerConfig, "provider-config", providerConfig, "provider config file")
@@ -96,12 +98,14 @@ func Run() error {
 	config := &Config{
 		Providers: providers,
 
-		CallbackURL: callbackURL,
+		CallbackURL:          callbackURL,
+		PostLogoutRediretURI: postLogoutURL,
 
-		LoginPath:   "/login",
-		LogoutPath:  "/logout",
-		DebugPath:   "/debug",
-		RefreshPath: "/refresh",
+		LoginPath:       "/login",
+		LogoutPath:      "/logout",
+		DebugPath:       "/debug",
+		RefreshPath:     "/refresh",
+		SessionInfoPath: "/info",
 
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),

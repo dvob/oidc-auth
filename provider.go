@@ -24,6 +24,7 @@ type ProviderConfig struct {
 	AuthorizationParameter url.Values `json:"authorization_parameters"`
 	TokenParameters        url.Values `json:"token_parameters"`
 	CallbackURL            string     `json:"callback_url"`
+	PostLogoutRedirectURI  string     `json:"post_logout_redirect_uri"`
 	Endpoints
 }
 
@@ -151,10 +152,14 @@ func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
 
 // rpInitiatedLogoutURL returns the logout URL if the end_session_endpoint is
 // configured or an empty string otherwise.
+// https://openid.net/specs/openid-connect-rpinitiated-1_0.html
 func (p *provider) rpInitiatedLogoutURL(ctx context.Context, tokens *Tokens) string {
 	q := url.Values{}
 	if tokens.IDToken != "" {
 		q.Add("id_token_hint", tokens.IDToken)
+	}
+	if p.config.PostLogoutRedirectURI != "" {
+		q.Add("post_logout_redirect_uri", p.config.PostLogoutRedirectURI)
 	}
 	return p.config.EndSessionEndpoint + "?" + q.Encode()
 }
