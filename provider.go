@@ -170,7 +170,10 @@ func (p *provider) exchange(ctx context.Context, code string, opts ...oauth2.Aut
 		return nil, err
 	}
 
-	idToken, idTokenAvailable := oauth2Token.Extra("id_token").(string)
+	idToken, ok := oauth2Token.Extra("id_token").(string)
+	if !ok {
+		return nil, fmt.Errorf("inavlid type for id_token")
+	}
 
 	tokens := &Tokens{
 		Token:   *oauth2Token,
@@ -178,7 +181,7 @@ func (p *provider) exchange(ctx context.Context, code string, opts ...oauth2.Aut
 	}
 
 	// OAuth2 only
-	if !idTokenAvailable {
+	if idToken == "" {
 		return tokens, nil
 	}
 
