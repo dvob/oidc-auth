@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -115,7 +114,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 
 	return &Authenticator{
 		loginPath:       config.LoginPath,
-		callbackPath:    callbackURL.Path,
+		callbackPath:    callbackPath,
 		sessionInfoPath: config.SessionInfoPath,
 		refreshPath:     config.RefreshPath,
 		logoutPath:      config.LogoutPath,
@@ -589,13 +588,4 @@ func randString(randomBytesLen int) (string, error) {
 	}
 
 	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
-}
-
-func generateKey(length int) ([]byte, error) {
-	k := make([]byte, length)
-	_, err := io.ReadFull(rand.Reader, k)
-	if err != nil {
-		return nil, err
-	}
-	return k, nil
 }
