@@ -1,4 +1,4 @@
-package cookie
+package oidcproxy
 
 import (
 	"crypto/rand"
@@ -8,12 +8,21 @@ import (
 	"time"
 )
 
+// func randString(n int) string {
+// 	const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+// 	b := make([]byte, n)
+// 	for i := range b {
+// 		b[i] = letterBytes[rand.Int63()%int64(len(letterBytes))]
+// 	}
+// 	return string(b)
+// }
+
 func TestRemoveOldCookies(t *testing.T) {
 	cookieName := "mytest"
 
 	myCookie := &http.Cookie{
 		Name:   cookieName,
-		Value:  randString(4100),
+		Value:  randData(4100),
 		Domain: "example.com",
 	}
 
@@ -45,7 +54,7 @@ func TestRemoveOldCookies(t *testing.T) {
 }
 
 func TestSplit(t *testing.T) {
-	data := randString(4100)
+	data := randData(4100)
 	cookieName := "mytest"
 
 	myCookie := &http.Cookie{
@@ -67,7 +76,7 @@ func TestSplit(t *testing.T) {
 	}
 }
 
-func randString(n int) string {
+func randData(n int) string {
 	const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 	r := make([]byte, n)

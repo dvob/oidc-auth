@@ -1,4 +1,4 @@
-package cookie
+package oidcproxy
 
 import (
 	"net/http"

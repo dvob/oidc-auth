@@ -13,8 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-
-	"github.com/dvob/oidc-proxy/cookie"
 )
 
 type Config struct {
@@ -90,7 +88,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 
-	cookieHandler := cookie.NewCookieHandler(hashKey, encKey)
+	cookieHandler := NewCookieHandler(hashKey, encKey)
 
 	// Setup providers
 	providers := map[string]provider{}
@@ -141,7 +139,7 @@ type Authenticator struct {
 	logoutPath      string
 	debugPath       string
 
-	cookieHandler        *cookie.CookieHandler
+	cookieHandler        *CookieHandler
 	sessionCookieName    string
 	loginStateCookieName string
 
