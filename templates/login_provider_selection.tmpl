@@ -1,0 +1,87 @@
+ <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        background: #00354d;
+        font-family: Verdana;
+        color: #4a4a4a;
+      }
+      body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100vw;
+        height: 100vh;
+      }
+      main {
+        box-sizing: border-box;
+        justify-content: center;
+        background: #fff;
+        border: 1px solid #eaebeb;
+        border-radius: 0.25rem;
+        padding: 3rem;
+        /* max-width: 20rem; */
+        text-align: center;
+        min-width: 30em;
+        margin: 1em;
+      }
+      @media (max-width: 30em) {
+        main {
+          width: 100%;
+        }
+      }
+      h1 {
+        margin-bottom: 1.5em;
+        font-size: 2em;
+      }
+      h2 {
+        margin-bottom: 1.5em;
+        font-size: 1.25em;
+      }
+      ul {
+        list-style-type: none;
+        display: flex;
+        flex-direction: column;
+        gap: 0.7em;
+      }
+      li {
+        display: block;
+        border: solid 1px black;
+        border: 1px solid #d5d7d8;
+        text-align: left;
+        border-radius: 0.25rem;
+        background: #efefef;
+        padding: 1em 1.5em;
+      }
+      a {
+        text-decoration: none;
+        color: inherit;
+      }
+      li:hover {
+       box-shadow: inset 0 0 0 999em rgba(255,255,255,.2);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      {{ if .Name }}
+      <h1>{{ .Name }}</h1>
+      {{ end }}
+      <h2>Sign in with:</h2>
+      <ul>
+        {{ range .Providers }}
+          <a href="{{ .Href }}">
+            <li>{{.Name}}</li>
+          </a>
+	{{ end }}
+       <ul>
+    </main>
+  </body>
+</html> 

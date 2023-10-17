@@ -92,11 +92,13 @@ func Run() error {
 	}
 
 	for _, p := range providers {
-		fmt.Println(p.IssuerURL)
+		slog.Info("configured provider", "client_id", p.ClientID, "issuer_url", p.IssuerURL, "name", p.Name)
 	}
 
 	config := &Config{
 		Providers: providers,
+
+		AppName: "OIDC Proxy",
 
 		CallbackURL:          callbackURL,
 		PostLogoutRediretURI: postLogoutURL,

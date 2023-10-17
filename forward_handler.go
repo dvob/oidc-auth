@@ -45,8 +45,8 @@ func newForwardHandler(upstream string) (http.Handler, error) {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s := SessionFromContext(r.Context())
 
-		if s != nil {
-			r.Header.Set("Authorization", s.Type()+" "+s.AccessToken)
+		if s != nil && s.HasAccessToken() {
+			r.Header.Set("Authorization", s.Tokens.Type()+" "+s.AccessToken())
 		}
 
 		// Upgrade is only supported by HTTP/1.1

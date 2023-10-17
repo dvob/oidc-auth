@@ -155,7 +155,7 @@ func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
 // https://openid.net/specs/openid-connect-rpinitiated-1_0.html
 func (p *provider) rpInitiatedLogoutURL(ctx context.Context, tokens *Tokens) string {
 	q := url.Values{}
-	if tokens.IDToken != "" {
+	if tokens != nil && tokens.IDToken != "" {
 		q.Add("id_token_hint", tokens.IDToken)
 	}
 	if p.config.PostLogoutRedirectURI != "" {

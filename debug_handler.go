@@ -41,11 +41,11 @@ func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
 	info.TLS = r.TLS
 	info.JWT = readJWT(readBearer(r))
 	info.Session = currentSession
-	if currentSession != nil {
-		info.SessionJWT.AccessToken = readJWT(currentSession.AccessToken)
-		info.SessionJWT.RefreshToken = readJWT(currentSession.RefreshToken)
-		info.SessionJWT.IDToken = readJWT(currentSession.IDToken)
-	}
+
+	info.SessionJWT.AccessToken = readJWT(currentSession.AccessToken())
+	info.SessionJWT.RefreshToken = readJWT(currentSession.RefreshToken())
+	info.SessionJWT.IDToken = readJWT(currentSession.IDToken())
+
 	err := json.NewEncoder(w).Encode(info)
 	if err != nil {
 		slog.Info("failed to encode json in info handler", "err", err)

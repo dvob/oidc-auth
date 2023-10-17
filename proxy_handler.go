@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"sync"
 	"time"
 )
 
@@ -48,16 +51,33 @@ type Config struct {
 	// secure cookie
 	HashKey    []byte
 	EncryptKey []byte
+
+	// Used in templates
+	AppName string
 }
 
 //go:embed templates/*
-var templates embed.FS
+var templateFS embed.FS
 
 func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
-	// templates
-	sessionInfoTemplate, err := template.ParseFS(templates, "templates/session_info.tmpl")
-	if err != nil {
-		return nil, err
+	var devMode = true
+	templates := map[string]*template.Template{}
+	if devMode {
+		var err error
+		templateDirFS := os.DirFS("templates")
+		templates, err = parsePageTemplates(templateDirFS)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		templateDirFS, err := fs.Sub(templateFS, "templates")
+		if err != nil {
+			return nil, err
+		}
+		templates, err = parsePageTemplates(templateDirFS)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// validate and prepare config
@@ -113,6 +133,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	}
 
 	return &Authenticator{
+		appName:         config.AppName,
 		loginPath:       config.LoginPath,
 		callbackPath:    callbackPath,
 		sessionInfoPath: config.SessionInfoPath,
@@ -124,13 +145,18 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		sessionCookieName:    "oprox",
 		loginStateCookieName: "state",
 
-		sessionInfoTemplate: *sessionInfoTemplate,
+		devMode:   true,
+		mu:        &sync.Mutex{},
+		templates: templates,
 
 		providers: providers,
 	}, nil
 }
 
 type Authenticator struct {
+	// used in templates if available
+	appName string
+
 	loginPath       string
 	callbackPath    string
 	sessionInfoPath string
@@ -142,21 +168,64 @@ type Authenticator struct {
 	sessionCookieName    string
 	loginStateCookieName string
 
-	sessionInfoTemplate template.Template
+	devMode   bool
+	mu        *sync.Mutex
+	templates map[string]*template.Template
 
 	providers map[string]provider
 }
 
 type Session struct {
 	ProviderIdentifier string
-	Tokens
+	Expiry             time.Time
+	Tokens             *Tokens
+	User               *User
+}
+
+func (s *Session) HasAccessToken() bool {
+	return s.Tokens != nil && s.Tokens.AccessToken != ""
+}
+
+func (s *Session) HasRefreshToken() bool {
+	return s.Tokens != nil && s.Tokens.RefreshToken != ""
+}
+
+func (s *Session) HasIDToken() bool {
+	return s.Tokens != nil && s.Tokens.IDToken != ""
+}
+
+func (s *Session) AccessToken() string {
+	if s.Tokens != nil {
+		return s.Tokens.AccessToken
+	}
+	return ""
+}
+
+func (s *Session) RefreshToken() string {
+	if s.Tokens != nil {
+		return s.Tokens.RefreshToken
+	}
+	return ""
+}
+
+func (s *Session) IDToken() string {
+	if s.Tokens != nil {
+		return s.Tokens.IDToken
+	}
+	return ""
+}
+
+type User struct {
+	Name   string
+	Groups []string
+	Extra  any
 }
 
 func (s *Session) Valid() bool {
 	if s == nil {
 		return false
 	}
-	return s.Tokens.Valid()
+	return s.Expiry.Before(time.Now())
 }
 
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
@@ -205,24 +274,24 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 		// run silent refresh or redirect to login if session expired
 		if !currentSession.Valid() {
-			if currentSession.RefreshToken == "" {
+			if currentSession.Tokens == nil || currentSession.Tokens.RefreshToken == "" {
 				slog.Debug("no refresh token available: initiate login")
 				op.RedirectToLogin(w, r)
 			}
 
-			newTokens, err := provider.refresh(r.Context(), &currentSession.Tokens)
+			newTokens, err := provider.refresh(r.Context(), currentSession.Tokens)
 			if err != nil {
-				slog.Info("token refresh failed", "err", err)
+				slog.Info("token refresh failed. initiate login", "err", err)
 				op.RedirectToLogin(w, r)
 				return
 			}
 
 			newSession := &Session{
 				ProviderIdentifier: currentSession.ProviderIdentifier,
-				Tokens:             *newTokens,
+				Tokens:             newTokens,
 			}
 
-			slog.Info("token refreshed", "access_token", newSession.AccessToken != "", "refresh_token", newSession.RefreshToken != "", "id_token", newSession.IDToken != "")
+			slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
 			err = op.setSession(w, r, newSession)
 			if err != nil {
@@ -254,9 +323,9 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 		Provider string    `json:"provider"`
 	}{
 		LoggedIn:              currentSession.Valid(),
-		AccessTokenAvailable:  currentSession.Valid() && currentSession.AccessToken != "",
-		RefreshTokenAvailable: currentSession.Valid() && currentSession.RefreshToken != "",
-		IDTokenAvailable:      currentSession.Valid() && currentSession.IDToken != "",
+		AccessTokenAvailable:  currentSession.Tokens != nil && currentSession.Tokens.AccessToken != "",
+		RefreshTokenAvailable: currentSession.Tokens != nil && currentSession.Tokens.RefreshToken != "",
+		IDTokenAvailable:      currentSession.Tokens != nil && currentSession.Tokens.IDToken != "",
 	}
 	if currentSession != nil {
 		sessionInfo.Expiry = currentSession.Expiry
@@ -283,26 +352,21 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// for all other content types we return html
-	w.Header().Add("Content-Type", "text/html")
-	err := op.sessionInfoTemplate.Execute(w, sessionInfo)
-	if err != nil {
-		slog.Error("failed to execute session info template", "err", err)
-	}
+	op.servePage(w, "session_info", sessionInfo)
 }
 
 // RefreshHandler handles exlicit refresh which prints the outcome to the
 // response writer.
 func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: return proper json response on accept json
-	// TODO: on HTML set falsh message
+	// TODO: on HTML set flash message
 	currentSession, provider := op.getSession(w, r)
 	if currentSession == nil {
 		http.Error(w, "no session", http.StatusUnauthorized)
 		return
 	}
 
-	newTokens, err := provider.refresh(r.Context(), &currentSession.Tokens)
+	newTokens, err := provider.refresh(r.Context(), currentSession.Tokens)
 	if err != nil {
 		slog.Info("token refresh failed", "err", err)
 		http.Error(w, "refresh failed", http.StatusInternalServerError)
@@ -311,10 +375,10 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 
 	newSession := &Session{
 		ProviderIdentifier: currentSession.ProviderIdentifier,
-		Tokens:             *newTokens,
+		Tokens:             newTokens,
 	}
 
-	slog.Info("token refreshed", "access_token", newSession.AccessToken != "", "refresh_token", newSession.RefreshToken != "", "id_token", newSession.IDToken != "")
+	slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
 	err = op.setSession(w, r, newSession)
 	if err != nil {
@@ -421,6 +485,40 @@ func (op *Authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, op.loginPath, http.StatusSeeOther)
 }
 
+func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
+	w.Header().Add("Cache-Control", "no-cache")
+
+	type LoginProviderData struct {
+		Name string
+		Href string
+	}
+
+	loginProviderData := struct {
+		Name      string
+		Providers []LoginProviderData
+	}{
+		Name: op.appName,
+	}
+
+	for _, provider := range op.providers {
+
+		href := &url.URL{
+			Path: op.loginPath,
+		}
+
+		parameters := url.Values{}
+		parameters.Add("provider", provider.config.Identifier)
+		href.RawQuery = parameters.Encode()
+
+		loginProviderData.Providers = append(loginProviderData.Providers, LoginProviderData{
+			Name: provider.config.Name,
+			Href: href.RequestURI(),
+		})
+	}
+
+	op.servePage(w, "login_provider_selection", loginProviderData)
+}
+
 // LoginHandler initiates the state and redirects the request to the providers
 // authorization URL.
 func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -435,16 +533,7 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if providerIdentifier == "" {
-		w.Header().Add("Content-Type", "text/html")
-		w.Header().Add("Cache-Control", "no-cache")
-		fmt.Fprintln(w, "<h1>select login provider</h1>")
-		for _, provider := range op.providers {
-			fullName := provider.config.Name
-			if fullName == "" {
-				fullName = provider.config.IssuerURL
-			}
-			fmt.Fprintf(w, `<div><a href="%s">%s (%s)</a></div>`, op.loginPath+"?provider="+provider.config.Identifier, fullName, provider.config.Identifier)
-		}
+		op.renderLoginProviderSelection(w)
 		return
 	}
 
@@ -501,8 +590,8 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	// revoke
 	revocationURL := provider.config.RevocationEndpoint
-	if revocationURL != "" {
-		err := provider.revoke(r.Context(), session.RefreshToken)
+	if revocationURL != "" && session.Tokens != nil && session.Tokens.RefreshToken != "" {
+		err := provider.revoke(r.Context(), session.Tokens.RefreshToken)
 		if err != nil {
 			slog.Warn("failed to revoke token", "err", err)
 		}
@@ -511,7 +600,7 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	// logut
 	endSessionURL := provider.config.EndSessionEndpoint
 	if endSessionURL != "" {
-		logoutURL := provider.rpInitiatedLogoutURL(r.Context(), &session.Tokens)
+		logoutURL := provider.rpInitiatedLogoutURL(r.Context(), session.Tokens)
 		http.Redirect(w, r, logoutURL, http.StatusSeeOther)
 		return
 	}
@@ -541,7 +630,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 	params := r.URL.Query()
 	if params.Get("error") != "" {
 		slog.Info("login failed", "error", params.Get("error"), "error_description", params.Get("error_description"))
-		http.Error(w, fmt.Sprintf("error=%s, error_description=%s", params.Get("error"), params.Get("error_description")), http.StatusInternalServerError)
+		op.renderLoginResult(w, nil, fmt.Sprintf("error=%s, error_description=%s", params.Get("error"), params.Get("error_description")))
 		return
 	}
 
@@ -559,7 +648,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 
 	session := &Session{
 		ProviderIdentifier: loginState.ProviderIdentifier,
-		Tokens:             *tokens,
+		Tokens:             tokens,
 	}
 
 	err = op.setSession(w, r, session)
@@ -572,12 +661,32 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 
 	originURI := loginState.URI
 	if originURI == "" {
-		// TODO: make configurable
-		// TODO: make base url configurable
-		http.Redirect(w, r, op.sessionInfoPath, http.StatusSeeOther)
+		op.renderLoginResult(w, session, "")
 		return
 	}
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
+}
+
+func (op *Authenticator) renderLoginResult(w http.ResponseWriter, session *Session, errorMessage string) {
+	w.Header().Add("Cache-Control", "no-cache")
+
+	type LoginResultData struct {
+		Error string
+		User  *User
+	}
+
+	data := LoginResultData{
+		Error: errorMessage,
+	}
+
+	if session != nil {
+		data.User = session.User
+	}
+
+	if errorMessage != "" {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	op.servePage(w, "login_result", data)
 }
 
 func randString(randomBytesLen int) (string, error) {
