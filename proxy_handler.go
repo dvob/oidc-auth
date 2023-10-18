@@ -60,8 +60,11 @@ type Config struct {
 var templateFS embed.FS
 
 func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
-	var devMode = true
-	templates := map[string]*template.Template{}
+	var (
+		devMode   = false
+		templates map[string]*template.Template
+	)
+
 	if devMode {
 		var err error
 		templateDirFS := os.DirFS("templates")
@@ -145,7 +148,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		sessionCookieName:    "oprox",
 		loginStateCookieName: "state",
 
-		devMode:   true,
+		devMode:   devMode,
 		mu:        &sync.Mutex{},
 		templates: templates,
 
@@ -168,11 +171,45 @@ type Authenticator struct {
 	sessionCookieName    string
 	loginStateCookieName string
 
+	sessionSetupFunc SessionSetupFunc
+
 	devMode   bool
 	mu        *sync.Mutex
 	templates map[string]*template.Template
 
 	providers map[string]provider
+}
+
+func (a *Authenticator) newSession(providerIdentifier string, tokens *Tokens) (*Session, error) {
+	newSession := &Session{
+		ProviderIdentifier: providerIdentifier,
+	}
+	setupFn := a.sessionSetupFunc
+	if setupFn == nil {
+		setupFn = defaultSessionSetupFunc
+	}
+
+	err := setupFn(newSession, tokens)
+	if err != nil {
+		return nil, err
+	}
+	return newSession, nil
+}
+
+type SessionSetupFunc func(s *Session, t *Tokens) error
+
+var defaultSessionSetupFunc SessionSetupFunc = func(s *Session, tokens *Tokens) error {
+	const defaultSessionDuration = time.Minute * 30
+
+	s.Tokens = tokens
+
+	if tokens.Expiry.IsZero() {
+		s.Expiry = time.Now().Add(defaultSessionDuration)
+	} else {
+		s.Expiry = tokens.Expiry
+	}
+
+	return nil
 }
 
 type Session struct {
@@ -225,7 +262,7 @@ func (s *Session) Valid() bool {
 	if s == nil {
 		return false
 	}
-	return s.Expiry.Before(time.Now())
+	return s.Expiry.After(time.Now())
 }
 
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
@@ -286,9 +323,11 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 				return
 			}
 
-			newSession := &Session{
-				ProviderIdentifier: currentSession.ProviderIdentifier,
-				Tokens:             newTokens,
+			newSession, err := op.newSession(currentSession.ProviderIdentifier, newTokens)
+			if err != nil {
+				slog.Info("session initialization failed after refresh. initiate login", "err", err)
+				op.RedirectToLogin(w, r)
+				return
 			}
 
 			slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
@@ -373,9 +412,11 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	newSession := &Session{
-		ProviderIdentifier: currentSession.ProviderIdentifier,
-		Tokens:             newTokens,
+	newSession, err := op.newSession(currentSession.ProviderIdentifier, newTokens)
+	if err != nil {
+		slog.Info("session initialization after token refresh failed", "err", err)
+		http.Error(w, "refresh failed", http.StatusInternalServerError)
+		return
 	}
 
 	slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
@@ -646,12 +687,14 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	session := &Session{
-		ProviderIdentifier: loginState.ProviderIdentifier,
-		Tokens:             tokens,
+	newSession, err := op.newSession(loginState.ProviderIdentifier, tokens)
+	if err != nil {
+		slog.Info("session initialization failed", "err", err)
+		http.Error(w, "session initialization failed", http.StatusInternalServerError)
+		return
 	}
 
-	err = op.setSession(w, r, session)
+	err = op.setSession(w, r, newSession)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -661,7 +704,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 
 	originURI := loginState.URI
 	if originURI == "" {
-		op.renderLoginResult(w, session, "")
+		op.renderLoginResult(w, newSession, "")
 		return
 	}
 	http.Redirect(w, r, loginState.URI, http.StatusSeeOther)

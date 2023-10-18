@@ -5,7 +5,6 @@ go 1.21
 require (
 	github.com/coreos/go-oidc/v3 v3.6.0
 	github.com/gorilla/securecookie v1.1.1
-	github.com/gorilla/sessions v1.2.1
 	golang.org/x/oauth2 v0.12.0
 )
 
