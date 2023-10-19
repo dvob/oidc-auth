@@ -15,6 +15,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
 type Config struct {
@@ -113,7 +115,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	cookieHandler := NewCookieHandler(hashKey, encKey)
 
 	// Setup providers
-	providers := map[string]provider{}
+	providers := map[string]*provider{}
 	for _, providerConfig := range config.Providers {
 		if providerConfig.CallbackURL == "" {
 			providerConfig.CallbackURL = config.CallbackURL
@@ -123,16 +125,16 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 			providerConfig.PostLogoutRedirectURI = config.PostLogoutRediretURI
 		}
 
-		provider, err := newProvider(ctx, providerConfig)
+		provider, err := NewProvider(ctx, providerConfig)
 		if err != nil {
 			return nil, err
 		}
 
-		if existing, ok := providers[provider.config.Identifier]; ok {
+		if existing, ok := providers[provider.ID()]; ok {
 			return nil, fmt.Errorf("duplicate provider %s (%s) and %s (%s)", existing.config.Name, existing.config.IssuerURL, provider.config.Name, provider.config.IssuerURL)
 		}
 
-		providers[provider.config.Identifier] = *provider
+		providers[provider.ID()] = provider
 	}
 
 	return &Authenticator{
@@ -171,50 +173,21 @@ type Authenticator struct {
 	sessionCookieName    string
 	loginStateCookieName string
 
-	sessionSetupFunc SessionSetupFunc
-
 	devMode   bool
 	mu        *sync.Mutex
 	templates map[string]*template.Template
 
-	providers map[string]provider
+	providers map[string]*provider
 }
 
-func (a *Authenticator) newSession(providerIdentifier string, tokens *Tokens) (*Session, error) {
-	newSession := &Session{
-		ProviderIdentifier: providerIdentifier,
-	}
-	setupFn := a.sessionSetupFunc
-	if setupFn == nil {
-		setupFn = defaultSessionSetupFunc
-	}
-
-	err := setupFn(newSession, tokens)
-	if err != nil {
-		return nil, err
-	}
-	return newSession, nil
-}
-
-type SessionSetupFunc func(s *Session, t *Tokens) error
-
-var defaultSessionSetupFunc SessionSetupFunc = func(s *Session, tokens *Tokens) error {
-	const defaultSessionDuration = time.Minute * 30
-
-	s.Tokens = tokens
-
-	if tokens.Expiry.IsZero() {
-		s.Expiry = time.Now().Add(defaultSessionDuration)
-	} else {
-		s.Expiry = tokens.Expiry
-	}
-
-	return nil
+type Tokens struct {
+	oauth2.Token
+	IDToken string `json:"id_token"`
 }
 
 type Session struct {
-	ProviderIdentifier string
-	Expiry             time.Time
+	ProviderIdentifier string    `json:"provider_identifier"`
+	Expiry             time.Time `json:"expiry"`
 	Tokens             *Tokens
 	User               *User
 }
@@ -253,6 +226,7 @@ func (s *Session) IDToken() string {
 }
 
 type User struct {
+	ID     string
 	Name   string
 	Groups []string
 	Extra  any
@@ -303,7 +277,7 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 		// check session
 		currentSession, provider := op.getSession(w, r)
-		if currentSession == nil {
+		if currentSession == nil || provider == nil {
 			slog.Debug("no session available: initiate login")
 			op.RedirectToLogin(w, r)
 			return
@@ -316,14 +290,14 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 				op.RedirectToLogin(w, r)
 			}
 
-			newTokens, err := provider.refresh(r.Context(), currentSession.Tokens)
+			newTokens, err := provider.refresh(r.Context(), currentSession.RefreshToken())
 			if err != nil {
 				slog.Info("token refresh failed. initiate login", "err", err)
 				op.RedirectToLogin(w, r)
 				return
 			}
 
-			newSession, err := op.newSession(currentSession.ProviderIdentifier, newTokens)
+			newSession, err := provider.newSession(r.Context(), newTokens)
 			if err != nil {
 				slog.Info("session initialization failed after refresh. initiate login", "err", err)
 				op.RedirectToLogin(w, r)
@@ -349,27 +323,31 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {
 	currentSession, provider := op.getSession(w, r)
 
-	sessionInfo := struct {
+	// TODO: rework
+	type sessionInfo struct {
 		// ? just return 401 instead of 200 with logged_in=false
 		LoggedIn bool `json:"logged_in"`
 
 		// ? only return expiry and let theses infos for the debug endpoint only
-		AccessTokenAvailable  bool `json:"access_token_available"`
-		RefreshTokenAvailable bool `json:"refresh_token_available"`
-		IDTokenAvailable      bool `json:"id_token_available"`
-
-		Expiry   time.Time `json:"expiry,omitempty"`
-		Provider string    `json:"provider"`
-	}{
-		LoggedIn:              currentSession.Valid(),
-		AccessTokenAvailable:  currentSession.Tokens != nil && currentSession.Tokens.AccessToken != "",
-		RefreshTokenAvailable: currentSession.Tokens != nil && currentSession.Tokens.RefreshToken != "",
-		IDTokenAvailable:      currentSession.Tokens != nil && currentSession.Tokens.IDToken != "",
+		AccessTokenAvailable  bool      `json:"access_token_available"`
+		RefreshTokenAvailable bool      `json:"refresh_token_available"`
+		IDTokenAvailable      bool      `json:"id_token_available"`
+		User                  *User     `json:"user"`
+		Expiry                time.Time `json:"expiry,omitempty"`
+		Provider              string    `json:"provider"`
 	}
-	if currentSession != nil {
-		sessionInfo.Expiry = currentSession.Expiry
-		// TODO: use implement Stringer for provider config
-		sessionInfo.Provider = provider.config.Name
+
+	info := &sessionInfo{
+		LoggedIn: currentSession.Valid(),
+	}
+
+	if currentSession != nil && provider != nil {
+		info.User = currentSession.User
+		info.AccessTokenAvailable = currentSession.HasAccessToken()
+		info.RefreshTokenAvailable = currentSession.HasRefreshToken()
+		info.IDTokenAvailable = currentSession.HasIDToken()
+		info.Expiry = currentSession.Expiry
+		info.Provider = provider.String()
 	}
 
 	w.Header().Add("Cache-Control", "no-cache")
@@ -381,7 +359,7 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 		}
 
 		w.Header().Add("Content-Type", "application/json")
-		out, err := json.Marshal(sessionInfo)
+		out, err := json.Marshal(info)
 		if err != nil {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			slog.Error("failed to marshal session info", "err", err)
@@ -391,7 +369,7 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	op.servePage(w, "session_info", sessionInfo)
+	op.servePage(w, "session_info", info)
 }
 
 // RefreshHandler handles exlicit refresh which prints the outcome to the
@@ -405,17 +383,22 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	newTokens, err := provider.refresh(r.Context(), currentSession.Tokens)
+	newTokens, err := provider.refresh(r.Context(), currentSession.RefreshToken())
 	if err != nil {
 		slog.Info("token refresh failed", "err", err)
 		http.Error(w, "refresh failed", http.StatusInternalServerError)
 		return
 	}
 
-	newSession, err := op.newSession(currentSession.ProviderIdentifier, newTokens)
+	newSession, err := provider.newSession(r.Context(), newTokens)
 	if err != nil {
 		slog.Info("session initialization after token refresh failed", "err", err)
-		http.Error(w, "refresh failed", http.StatusInternalServerError)
+
+		message := "token refresh failed"
+		if userError, ok := err.(UserError); ok {
+			message += ": " + userError.UserError()
+		}
+		http.Error(w, message, http.StatusInternalServerError)
 		return
 	}
 
@@ -460,7 +443,7 @@ func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Se
 		op.deleteSession(w)
 		return nil, nil
 	}
-	return s, &provider
+	return s, provider
 }
 
 func (op *Authenticator) setSession(w http.ResponseWriter, r *http.Request, s *Session) error {
@@ -548,7 +531,7 @@ func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
 		}
 
 		parameters := url.Values{}
-		parameters.Add("provider", provider.config.Identifier)
+		parameters.Add("provider", provider.ID())
 		href.RawQuery = parameters.Encode()
 
 		loginProviderData.Providers = append(loginProviderData.Providers, LoginProviderData{
@@ -687,10 +670,15 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	newSession, err := op.newSession(loginState.ProviderIdentifier, tokens)
+	newSession, err := provider.newSession(r.Context(), tokens)
 	if err != nil {
 		slog.Info("session initialization failed", "err", err)
-		http.Error(w, "session initialization failed", http.StatusInternalServerError)
+
+		message := "Login verification failed."
+		if userError, ok := err.(UserError); ok {
+			message += ": " + userError.UserError()
+		}
+		op.renderLoginResult(w, newSession, message)
 		return
 	}
 
@@ -727,6 +715,7 @@ func (op *Authenticator) renderLoginResult(w http.ResponseWriter, session *Sessi
 	}
 
 	if errorMessage != "" {
+		// TODO: could also be 401
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	op.servePage(w, "login_result", data)

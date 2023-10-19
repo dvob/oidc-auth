@@ -87,6 +87,10 @@ func Run() error {
 		providers = append(providers, defaultProvider)
 	}
 
+	for i := range providers {
+		providers[i].SetupSessionFunc = ChainSessionSetupFunc(SaveGroups()) //, RequireIDTokenGroup("B2BX_D3_ADMINAPI_ADMIN"))
+	}
+
 	if len(providers) == 0 {
 		return fmt.Errorf("no configured providers")
 	}
@@ -126,7 +130,12 @@ func Run() error {
 		}
 	} else {
 		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintln(w, "hello")
+			s := SessionFromContext(r.Context())
+			if s.User != nil {
+				fmt.Fprintln(w, "hello "+s.User.Name)
+			} else {
+				fmt.Fprintln(w, "hello")
+			}
 		})
 	}
 

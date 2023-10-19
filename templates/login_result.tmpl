@@ -19,12 +19,14 @@
       <h1>Login successful</h1>
       {{ if .User }}
         <p>User: {{ .User.Name }}</p>
+	{{ with .User.Groups }}
         <p>Groups: </p>
 	<ul>
-	  {{ range .User.Groups }}
+	  {{ range . }}
 	  <li>{{ . }}</li>
 	  {{ end }}
 	</ul>
+	{{ end }}
       {{ end }}
     {{ end }}
     </main>

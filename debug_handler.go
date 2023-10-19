@@ -14,20 +14,16 @@ import (
 // DebugHandler returns information about the session including the tokens.
 func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
 	currentSession, provider := op.getSession(w, r)
-
-	var providerConfig *ProviderConfig
-	if provider != nil {
-		c := provider.config
-		c.ClientSecret = "REDACTED"
-		providerConfig = &c
-	}
 	w.Header().Add("Content-Type", "application/json")
 	info := struct {
-		Hostname   string               `json:"hostname"`
-		Request    *request             `json:"request"`
-		TLS        *tls.ConnectionState `json:"tls"`
-		JWT        *jwt                 `json:"jwt"`
-		Provider   *ProviderConfig      `json:"provider_config"`
+		Hostname string               `json:"hostname"`
+		Request  *request             `json:"request"`
+		TLS      *tls.ConnectionState `json:"tls"`
+		JWT      *jwt                 `json:"jwt"`
+		Provider struct {
+			ID     string         `json:"id"`
+			Config ProviderConfig `json:"config"`
+		} `json:"provider"`
 		Session    *Session
 		SessionJWT struct {
 			AccessToken  *jwt `json:"access_token"`
@@ -35,7 +31,10 @@ func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
 			IDToken      *jwt `json:"id_token"`
 		} `json:"session_jwt"`
 	}{}
-	info.Provider = providerConfig
+	if provider != nil {
+		info.Provider.Config = provider.Config()
+		info.Provider.ID = provider.ID()
+	}
 	info.Hostname, _ = os.Hostname()
 	info.Request = newRequest(r)
 	info.TLS = r.TLS
