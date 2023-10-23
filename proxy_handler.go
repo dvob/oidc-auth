@@ -115,7 +115,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	cookieHandler := NewCookieHandler(hashKey, encKey)
 
 	// Setup providers
-	providers := map[string]*provider{}
+	providers := map[string]*Provider{}
 	for _, providerConfig := range config.Providers {
 		if providerConfig.CallbackURL == "" {
 			providerConfig.CallbackURL = config.CallbackURL
@@ -177,7 +177,7 @@ type Authenticator struct {
 	mu        *sync.Mutex
 	templates map[string]*template.Template
 
-	providers map[string]*provider
+	providers map[string]*Provider
 }
 
 type Tokens struct {
@@ -426,7 +426,7 @@ func ContextWithSession(parent context.Context, s *Session) context.Context {
 	return context.WithValue(parent, sessionContextKey, s)
 }
 
-func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *provider) {
+func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *Provider) {
 	s := &Session{}
 	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
 	if !ok {

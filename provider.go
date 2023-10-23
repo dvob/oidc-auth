@@ -62,7 +62,7 @@ func (e *Endpoints) Merge(e2 *Endpoints) {
 	}
 }
 
-func NewProvider(ctx context.Context, config ProviderConfig) (*provider, error) {
+func NewProvider(ctx context.Context, config ProviderConfig) (*Provider, error) {
 	var err error
 
 	if config.ClientID == "" {
@@ -79,7 +79,7 @@ func NewProvider(ctx context.Context, config ProviderConfig) (*provider, error) 
 		providerID = generateProviderIdentifier(&config)
 	}
 
-	provider := &provider{
+	provider := &Provider{
 		id:     providerID,
 		config: &config,
 		oauth2Config: &oauth2.Config{
@@ -134,7 +134,7 @@ func generateProviderIdentifier(c *ProviderConfig) string {
 	return base64.RawStdEncoding.EncodeToString(h.Sum(nil))[:7]
 }
 
-type provider struct {
+type Provider struct {
 	id               string
 	config           *ProviderConfig
 	oidcProvider     *oidc.Provider
@@ -143,16 +143,16 @@ type provider struct {
 	sessionSetupFunc SessionSetupFunc
 }
 
-func (p *provider) ID() string { return p.id }
+func (p *Provider) ID() string { return p.id }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	if p.config.Name == "" {
 		return p.ID()
 	}
 	return fmt.Sprintf("%s (%s)", p.config.Name, p.ID())
 }
 
-func (p *provider) Config() ProviderConfig {
+func (p *Provider) Config() ProviderConfig {
 	providerConfig := *p.config
 	return providerConfig
 }
@@ -163,7 +163,7 @@ type TokenResponse struct {
 	IDToken    *oidc.IDToken
 }
 
-func (p *provider) authCodeURL(ctx context.Context, state string, opts ...oauth2.AuthCodeOption) string {
+func (p *Provider) authCodeURL(ctx context.Context, state string, opts ...oauth2.AuthCodeOption) string {
 	opts = append(opts, urlValuesIntoOpts(p.config.AuthorizationParameter)...)
 	return p.oauth2Config.AuthCodeURL(state, opts...)
 }
@@ -181,7 +181,7 @@ func urlValuesIntoOpts(urlValues url.Values) []oauth2.AuthCodeOption {
 // rpInitiatedLogoutURL returns the logout URL if the end_session_endpoint is
 // configured or an empty string otherwise.
 // https://openid.net/specs/openid-connect-rpinitiated-1_0.html
-func (p *provider) rpInitiatedLogoutURL(ctx context.Context, tokens *Tokens) string {
+func (p *Provider) rpInitiatedLogoutURL(ctx context.Context, tokens *Tokens) string {
 	q := url.Values{}
 	if tokens != nil && tokens.IDToken != "" {
 		q.Add("id_token_hint", tokens.IDToken)
@@ -192,7 +192,7 @@ func (p *provider) rpInitiatedLogoutURL(ctx context.Context, tokens *Tokens) str
 	return p.config.EndSessionEndpoint + "?" + q.Encode()
 }
 
-func (p *provider) exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*TokenResponse, error) {
+func (p *Provider) exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*TokenResponse, error) {
 	oauth2Token, err := p.oauth2Config.Exchange(ctx, code, urlValuesIntoOpts(p.config.TokenParameters)...)
 	if err != nil {
 		return nil, err
@@ -201,7 +201,7 @@ func (p *provider) exchange(ctx context.Context, code string, opts ...oauth2.Aut
 	return p.intoTokenResponse(ctx, oauth2Token)
 }
 
-func (p *provider) newSession(ctx context.Context, tr *TokenResponse) (*Session, error) {
+func (p *Provider) newSession(ctx context.Context, tr *TokenResponse) (*Session, error) {
 	newSession := &Session{
 		ProviderIdentifier: p.ID(),
 	}
@@ -212,7 +212,7 @@ func (p *provider) newSession(ctx context.Context, tr *TokenResponse) (*Session,
 	return newSession, nil
 }
 
-func (p *provider) intoTokenResponse(ctx context.Context, oauth2Token *oauth2.Token) (*TokenResponse, error) {
+func (p *Provider) intoTokenResponse(ctx context.Context, oauth2Token *oauth2.Token) (*TokenResponse, error) {
 	idToken, ok := oauth2Token.Extra("id_token").(string)
 	if !ok {
 		return nil, fmt.Errorf("inavlid type for id_token")
@@ -244,7 +244,7 @@ func (p *provider) intoTokenResponse(ctx context.Context, oauth2Token *oauth2.To
 // refresh uses the refresh token of the existingTokens to obtain a new set of
 // tokens. providers do not in every case return a new id_token. in these cases
 // it returns uses the id_token of the existingTokens in the new token set.
-func (p *provider) refresh(ctx context.Context, refreshToken string) (*TokenResponse, error) {
+func (p *Provider) refresh(ctx context.Context, refreshToken string) (*TokenResponse, error) {
 	// we deliberately only set the refresh_token to force the renewal
 	refreshTokenSource := &oauth2.Token{
 		RefreshToken: refreshToken,
@@ -263,7 +263,7 @@ func (p *provider) refresh(ctx context.Context, refreshToken string) (*TokenResp
 // particular token is a refresh token and the authorization server supports
 // the revocation of access tokens, then the authorization server SHOULD also
 // invalidate all access tokens based on the same authorization grant`.
-func (p *provider) revoke(ctx context.Context, token string) error {
+func (p *Provider) revoke(ctx context.Context, token string) error {
 	if p.config.RevocationEndpoint == "" {
 		return fmt.Errorf("provider has no revocation endpoint set")
 	}
@@ -318,7 +318,7 @@ func NewUserError(err error, code int, userErrorMessage string) *userError {
 type ClaimCheckFunc func(claims map[string]any) error
 
 func ChainSessionSetupFunc(sessionSetupFuncs ...SessionSetupFunc) SessionSetupFunc {
-	return func(ctx context.Context, provider *provider, tr *TokenResponse, s *Session) error {
+	return func(ctx context.Context, provider *Provider, tr *TokenResponse, s *Session) error {
 		for _, sessionSetupFunc := range sessionSetupFuncs {
 			err := sessionSetupFunc(ctx, provider, tr, s)
 			if err != nil {
@@ -330,7 +330,7 @@ func ChainSessionSetupFunc(sessionSetupFuncs ...SessionSetupFunc) SessionSetupFu
 }
 
 func NewSessionClaimCheckFunc(claimCheckFunc ClaimCheckFunc) SessionSetupFunc {
-	return func(ctx context.Context, provider *provider, tr *TokenResponse, s *Session) error {
+	return func(ctx context.Context, provider *Provider, tr *TokenResponse, s *Session) error {
 		if tr.IDToken == nil {
 			return claimCheckFunc(nil)
 		}
@@ -344,12 +344,12 @@ func NewSessionClaimCheckFunc(claimCheckFunc ClaimCheckFunc) SessionSetupFunc {
 	}
 }
 
-type SessionSetupFunc func(ctx context.Context, p *provider, t *TokenResponse, s *Session) error
+type SessionSetupFunc func(ctx context.Context, p *Provider, t *TokenResponse, s *Session) error
 
 // RequireIDTokenGroup verifies that at least one of the given groups is
 // available in the id_token.
 func RequireIDTokenGroup(groups ...string) SessionSetupFunc {
-	return func(ctx context.Context, p *provider, t *TokenResponse, s *Session) error {
+	return func(ctx context.Context, p *Provider, t *TokenResponse, s *Session) error {
 		if t.IDToken == nil {
 			return fmt.Errorf("id token missing to check groups")
 		}
@@ -375,7 +375,7 @@ func RequireIDTokenGroup(groups ...string) SessionSetupFunc {
 
 // SaveGroups adds groups from id_token claims to session. It ignores errors.
 func SaveGroups() SessionSetupFunc {
-	return func(ctx context.Context, p *provider, t *TokenResponse, s *Session) error {
+	return func(ctx context.Context, p *Provider, t *TokenResponse, s *Session) error {
 		if t.IDToken == nil {
 			return nil
 		}
@@ -400,7 +400,7 @@ func SaveGroups() SessionSetupFunc {
 	}
 }
 
-var defaultSessionSetupFunc SessionSetupFunc = func(ctx context.Context, p *provider, t *TokenResponse, s *Session) error {
+var defaultSessionSetupFunc SessionSetupFunc = func(ctx context.Context, p *Provider, t *TokenResponse, s *Session) error {
 	const defaultSessionDuration = time.Minute * 15
 
 	s.Tokens = &Tokens{
