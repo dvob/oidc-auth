@@ -320,6 +320,19 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 	})
 }
 
+func (op *Authenticator) LoadSessionHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		currentSession, _ := op.getSession(w, r)
+		r = r.WithContext(ContextWithSession(r.Context(), currentSession))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (op *Authenticator) RemoveSession(w http.ResponseWriter, r *http.Request) {
+	op.deleteSession(w, r)
+	return
+}
+
 func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {
 	currentSession, provider := op.getSession(w, r)
 
@@ -434,13 +447,13 @@ func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Se
 	}
 	if err != nil {
 		slog.Info("failed to decode session", "err", err)
-		op.deleteSession(w)
+		op.deleteSession(w, r)
 		return nil, nil
 	}
 	provider, ok := op.providers[s.ProviderIdentifier]
 	if !ok {
 		slog.Info("session with unknown provider", "identifier", s.ProviderIdentifier)
-		op.deleteSession(w)
+		op.deleteSession(w, r)
 		return nil, nil
 	}
 	return s, provider
@@ -461,8 +474,8 @@ func (op *Authenticator) setSession(w http.ResponseWriter, r *http.Request, s *S
 	return err
 }
 
-func (op *Authenticator) deleteSession(w http.ResponseWriter) {
-	op.cookieHandler.Delete(w, op.sessionCookieName)
+func (op *Authenticator) deleteSession(w http.ResponseWriter, r *http.Request) {
+	op.cookieHandler.Delete(w, r, op.sessionCookieName)
 }
 
 func (op *Authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
@@ -473,7 +486,7 @@ func (op *Authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *
 	}
 	if err != nil {
 		slog.Info("failed to decode login state", "err", err)
-		op.deleteLoginState(w)
+		op.deleteLoginState(w, r)
 		return nil
 	}
 	return loginState
@@ -487,8 +500,8 @@ func (op *Authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l
 	return err
 }
 
-func (op *Authenticator) deleteLoginState(w http.ResponseWriter) {
-	op.cookieHandler.Delete(w, op.loginStateCookieName)
+func (op *Authenticator) deleteLoginState(w http.ResponseWriter, r *http.Request) {
+	op.cookieHandler.Delete(w, r, op.loginStateCookieName)
 }
 
 type LoginState struct {
@@ -610,7 +623,7 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// delete cookie
-	op.deleteSession(w)
+	op.deleteSession(w, r)
 
 	// revoke
 	revocationURL := provider.config.RevocationEndpoint
@@ -643,7 +656,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	op.deleteLoginState(w)
+	op.deleteLoginState(w, r)
 
 	state := r.URL.Query().Get("state")
 	if state != loginState.State {

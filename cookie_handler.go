@@ -47,10 +47,16 @@ func (c *CookieHandler) Get(r *http.Request, name string, dstValue any) (bool, e
 	return true, c.securecookie.Decode(name, encodedValue, dstValue)
 }
 
-func (c *CookieHandler) Delete(w http.ResponseWriter, name string) {
-	// TODO: handle multiple cookies
-	cookie := *c.cookieOptions
-	cookie.Name = name
-	cookie.MaxAge = -1
-	http.SetCookie(w, &cookie)
+func (c *CookieHandler) Delete(w http.ResponseWriter, r *http.Request, name string) {
+	cookies := getCookies(r, name)
+	if len(cookies) == 0 {
+		return
+	}
+
+	for _, cookie := range cookies {
+		deletionCookie := *c.cookieOptions
+		deletionCookie.Name = cookie.Name
+		deletionCookie.MaxAge = -1
+		http.SetCookie(w, &deletionCookie)
+	}
 }
