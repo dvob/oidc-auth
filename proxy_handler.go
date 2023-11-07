@@ -114,8 +114,9 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 
 	cookieHandler := NewCookieHandler(hashKey, encKey)
 
-	// Setup providers
-	providers := map[string]*Provider{}
+	// Setup providerMap
+	providerMap := map[string]*Provider{}
+	providerList := []*Provider{}
 	for _, providerConfig := range config.Providers {
 		if providerConfig.CallbackURL == "" {
 			providerConfig.CallbackURL = config.CallbackURL
@@ -127,14 +128,15 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 
 		provider, err := NewProvider(ctx, providerConfig)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to initialize provider '%s': %w", providerConfig.IssuerURL, err)
 		}
 
-		if existing, ok := providers[provider.ID()]; ok {
+		if existing, ok := providerMap[provider.ID()]; ok {
 			return nil, fmt.Errorf("duplicate provider %s (%s) and %s (%s)", existing.config.Name, existing.config.IssuerURL, provider.config.Name, provider.config.IssuerURL)
 		}
 
-		providers[provider.ID()] = provider
+		providerMap[provider.ID()] = provider
+		providerList = append(providerList, provider)
 	}
 
 	return &Authenticator{
@@ -154,7 +156,8 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		mu:        &sync.Mutex{},
 		templates: templates,
 
-		providers: providers,
+		providerMap:  providerMap,
+		providerList: providerList,
 	}, nil
 }
 
@@ -177,7 +180,8 @@ type Authenticator struct {
 	mu        *sync.Mutex
 	templates map[string]*template.Template
 
-	providers map[string]*Provider
+	providerMap  map[string]*Provider
+	providerList []*Provider
 }
 
 type Tokens struct {
@@ -450,7 +454,7 @@ func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Se
 		op.deleteSession(w, r)
 		return nil, nil
 	}
-	provider, ok := op.providers[s.ProviderIdentifier]
+	provider, ok := op.providerMap[s.ProviderIdentifier]
 	if !ok {
 		slog.Info("session with unknown provider", "identifier", s.ProviderIdentifier)
 		op.deleteSession(w, r)
@@ -537,7 +541,7 @@ func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
 		Name: op.appName,
 	}
 
-	for _, provider := range op.providers {
+	for _, provider := range op.providerList {
 
 		href := &url.URL{
 			Path: op.loginPath,
@@ -559,22 +563,19 @@ func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
 // LoginHandler initiates the state and redirects the request to the providers
 // authorization URL.
 func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
-	providerIdentifier := r.URL.Query().Get("provider")
+	providerID := r.URL.Query().Get("provider")
 
 	// if provider is not set and there is only one configured we use that one
-	if len(op.providers) == 1 && providerIdentifier == "" {
-		// this will only loop once.
-		for name := range op.providers {
-			providerIdentifier = name
-		}
+	if len(op.providerList) == 1 && providerID == "" {
+		providerID = op.providerList[0].ID()
 	}
 
-	if providerIdentifier == "" {
+	if providerID == "" {
 		op.renderLoginProviderSelection(w)
 		return
 	}
 
-	provider, ok := op.providers[providerIdentifier]
+	provider, ok := op.providerMap[providerID]
 	if !ok {
 		http.Error(w, "unknown provider", http.StatusBadRequest)
 		return
@@ -591,11 +592,11 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	state := op.getLoginState(w, r)
 	if state == nil {
 		state = &LoginState{
-			ProviderIdentifier: providerIdentifier,
+			ProviderIdentifier: providerID,
 			State:              stateStr,
 		}
 	} else {
-		state.ProviderIdentifier = providerIdentifier
+		state.ProviderIdentifier = providerID
 		state.State = stateStr
 	}
 
@@ -671,7 +672,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	provider, ok := op.providers[loginState.ProviderIdentifier]
+	provider, ok := op.providerMap[loginState.ProviderIdentifier]
 	if !ok {
 		http.Error(w, "invalid state unknown provider", http.StatusBadRequest)
 		return
