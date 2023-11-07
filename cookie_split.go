@@ -122,54 +122,8 @@ func splitCookie(c *http.Cookie) []*http.Cookie {
 	return cookies
 }
 
-// getCookieMetadataLen calculates the length of a cookie without the value.
-// This function is mostly an adapted copy of the http.Cookie.String() method.
 func getCookieMetadataLen(c *http.Cookie) int {
-	metaDataLen := len(c.Name + "=")
-
-	if len(c.Path) > 0 {
-		metaDataLen += len("; Path=")
-		// TODO: sanitize Path
-		metaDataLen += len(c.Path)
-	}
-
-	if len(c.Domain) > 0 {
-		// TODO: invalid domains are not added
-		metaDataLen += len("; Domain=")
-		domainLen := len(c.Domain)
-		if c.Domain[0] == '.' {
-			domainLen -= 1
-		}
-		metaDataLen += domainLen
-	}
-
-	if c.Expires.Year() >= 1601 {
-		metaDataLen += len("; Expires=")
-		// TODO: can we use fixed size here
-		metaDataLen += len(c.Expires.Format(http.TimeFormat))
-	}
-	if c.MaxAge > 0 {
-		metaDataLen += len("; Max-Age=")
-		// TODO: use math solution
-		metaDataLen += len(strconv.Itoa(c.MaxAge))
-	} else if c.MaxAge < 0 {
-		metaDataLen += len("; Max-Age=0")
-	}
-	if c.HttpOnly {
-		metaDataLen += len("; HttpOnly")
-	}
-	if c.Secure {
-		metaDataLen += len("; Secure")
-	}
-	switch c.SameSite {
-	case http.SameSiteDefaultMode:
-		// Skip, default mode is obtained by not emitting the attribute.
-	case http.SameSiteNoneMode:
-		metaDataLen += len("; SameSite=None")
-	case http.SameSiteLaxMode:
-		metaDataLen += len("; SameSite=Lax")
-	case http.SameSiteStrictMode:
-		metaDataLen += len("; SameSite=Strict")
-	}
-	return metaDataLen
+	cookie := *c
+	cookie.Value = ""
+	return len(cookie.String()) + 2
 }
