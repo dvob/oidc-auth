@@ -11,29 +11,47 @@ type CookieHandler struct {
 	cookieOptions *http.Cookie
 }
 
+func NewDefaultCookieOptions() *http.Cookie {
+	return &http.Cookie{
+		Path:     "/",
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
 func NewCookieHandler(hashKey, encryptKey []byte) *CookieHandler {
+	return NewCookieHandlerWithOptions(hashKey, encryptKey, NewDefaultCookieOptions())
+}
+
+func NewCookieHandlerWithOptions(hashKey []byte, encryptKey []byte, options *http.Cookie) *CookieHandler {
+	if options == nil {
+		options = NewDefaultCookieOptions()
+	}
 	sc := securecookie.New(hashKey, encryptKey)
 	sc.MaxLength(0)
 	// sc.SetSerializer(newCompressSerializer())
 	return &CookieHandler{
-		securecookie: sc,
-		cookieOptions: &http.Cookie{
-			Path: "/",
-		},
+		securecookie:  sc,
+		cookieOptions: options,
 	}
 }
 
-func (c *CookieHandler) Set(w http.ResponseWriter, r *http.Request, name string, value any) error {
+func (c *CookieHandler) Set(w http.ResponseWriter, r *http.Request, name string, value any, opts ...func(*http.Cookie)) error {
 	encodedValue, err := c.securecookie.Encode(name, value)
 	if err != nil {
 		return err
 	}
 
-	cookie := *c.cookieOptions
+	newCookie := *c.cookieOptions
+	cookie := &newCookie
 	cookie.Name = name
 	cookie.Value = encodedValue
 
-	SetCookie(w, r, &cookie)
+	for _, opt := range opts {
+		opt(cookie)
+	}
+	SetCookie(w, r, cookie)
 	return nil
 }
 
