@@ -7,7 +7,7 @@ import (
 	"net/url"
 )
 
-func newForwardHandler(upstream string) (http.Handler, error) {
+func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (http.Handler, error) {
 	targetURL, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
@@ -17,6 +17,9 @@ func newForwardHandler(upstream string) (http.Handler, error) {
 		pr.SetURL(targetURL)
 		pr.SetXForwarded()
 		// pr.Out.Host = pr.In.Host
+		if modifyRequest != nil {
+			modifyRequest(pr.Out)
+		}
 	}
 
 	// http11Upstream := httputil.NewSingleHostReverseProxy(targetURL)

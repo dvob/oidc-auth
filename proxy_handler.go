@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -335,6 +336,17 @@ func (op *Authenticator) LoadSessionHandler(next http.Handler) http.Handler {
 func (op *Authenticator) RemoveSession(w http.ResponseWriter, r *http.Request) {
 	op.deleteSession(w, r)
 	return
+}
+
+func (op *Authenticator) RemoveCookie(r *http.Request) {
+	cookies := r.Cookies()
+	r.Header.Del("Cookie")
+	for _, c := range cookies {
+		if c.Name == op.sessionCookieName || strings.HasPrefix(c.Name, op.sessionCookieName+"_") {
+			continue
+		}
+		r.AddCookie(c)
+	}
 }
 
 func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {

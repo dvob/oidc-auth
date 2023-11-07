@@ -124,7 +124,7 @@ func Run() error {
 
 	var inner http.Handler
 	if upstream != "" {
-		inner, err = newForwardHandler(upstream)
+		inner, err = newForwardHandler(upstream, authenticator.RemoveCookie)
 		if err != nil {
 			return err
 		}
