@@ -10,7 +10,7 @@
     <main>
       <h1>Session Info</h1>
       {{ if .LoggedIn }}
-        <p><span>Expiry: </span>{{ .Expiry }}</p>
+        <p><span>Expiry: </span><time datetime="{{ .Expiry | timeFmt }}">{{ .Expiry }}</time></p>
         <p><span>Provider: </span>{{ .Provider }}</p>
         <p><span>Access Token Available: </span>{{ .AccessTokenAvailable }}</p>
         <p><span>Refresh Token Available: </span>{{ .RefreshTokenAvailable }}</p>
@@ -26,7 +26,13 @@
           {{ end }}
         {{ end }}
       {{ else }}
-      <p><span>Your session expired at </span><time datetime="{{ .Expiry }}">{{ .Expiry }}</time>.</p>
+      <p>
+        {{ if not .Expiry.IsZero }}
+	  <span>Your session expired at </span><time datetime="{{ .Expiry | timeFmt }}">{{ .Expiry }}</time>.
+	{{ else }}
+	  You are not logged in.
+	{{ end }}
+      </p>
         {{ if .RefreshTokenAvailable }}
         <p>Your session can potentially be reactived using the existing refresh token</p>
         {{ end }}
@@ -46,5 +52,12 @@
       </form>
       {{ end }}
     </main>
+    <script>
+      const userLocale = navigator.language || navigator.userLanguage;
+      document.querySelectorAll("time").forEach(e => {
+        let d = new Date(e.dateTime)
+        e.innerHTML = d.toLocaleString(userLocale, { hour12: false})
+      })
+    </script>
   </body>
 </html> 

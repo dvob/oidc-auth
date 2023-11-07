@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 )
 
 func (a *Authenticator) servePage(w http.ResponseWriter, templateName string, data any) {
@@ -65,8 +66,13 @@ func parsePageTemplates(fsys fs.FS) (map[string]*template.Template, error) {
 	}
 
 	templates := make(map[string]*template.Template)
+	funcs := map[string]any{
+		"timeFmt": func(t time.Time) string {
+			return t.Format(time.RFC3339)
+		},
+	}
 	for _, match := range matches {
-		t, err := template.New(match).ParseFS(fsys, match)
+		t, err := template.New(match).Funcs(funcs).ParseFS(fsys, match)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse %s: %v", match, err)
 		}
