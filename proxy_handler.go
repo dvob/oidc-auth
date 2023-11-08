@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -148,7 +147,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		debugPath:       config.DebugPath,
 
 		cookieHandler:        cookieHandler,
-		sessionCookieName:    "oprox",
+		sessionManager:       newSessionManager(hashKey, encKey, providerMap),
 		loginStateCookieName: "state",
 
 		devMode:   devMode,
@@ -172,7 +171,7 @@ type Authenticator struct {
 	debugPath       string
 
 	cookieHandler        *CookieHandler
-	sessionCookieName    string
+	sessionManager       *sessionManager
 	loginStateCookieName string
 
 	devMode   bool
@@ -220,12 +219,15 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 		}
 
 		// check session
-		currentSession, provider := op.getSession(w, r)
-		if currentSession == nil || provider == nil {
+		currentSessionCtx, _ := op.sessionManager.Get(w, r)
+		if currentSessionCtx == nil {
 			slog.Debug("no session available: initiate login")
 			op.RedirectToLogin(w, r)
 			return
 		}
+
+		provider := currentSessionCtx.Provider
+		currentSession := currentSessionCtx.Session
 
 		// run silent refresh or redirect to login if session expired
 		if !currentSession.Valid() {
@@ -243,7 +245,7 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 			slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
-			err = op.setSession(w, r, newSession)
+			err = op.sessionManager.Set(w, r, newSession)
 			if err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
@@ -252,37 +254,42 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 			currentSession = newSession
 		}
 
-		r = r.WithContext(ContextWithSession(r.Context(), currentSession))
+		r = r.WithContext(ContextWithSession(r.Context(), &SessionContext{
+			Session:  currentSession,
+			Provider: provider,
+		}))
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (op *Authenticator) LoadSessionHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		currentSession, _ := op.getSession(w, r)
-		r = r.WithContext(ContextWithSession(r.Context(), currentSession))
+		currentSessionCtx, _ := op.sessionManager.Get(w, r)
+		r = r.WithContext(ContextWithSession(r.Context(), currentSessionCtx))
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (op *Authenticator) RemoveSession(w http.ResponseWriter, r *http.Request) {
-	op.deleteSession(w, r)
+	op.sessionManager.Remove(w, r)
 	return
 }
 
 func (op *Authenticator) RemoveCookie(r *http.Request) {
-	cookies := r.Cookies()
-	r.Header.Del("Cookie")
-	for _, c := range cookies {
-		if c.Name == op.sessionCookieName || strings.HasPrefix(c.Name, op.sessionCookieName+"_") {
-			continue
-		}
-		r.AddCookie(c)
-	}
+	op.sessionManager.RemoveCookie(r)
 }
 
 func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {
-	currentSession, provider := op.getSession(w, r)
+	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	var (
+		currentSession *Session
+		provider       *Provider
+	)
+
+	if currentSessionCtx != nil {
+		currentSession = currentSessionCtx.Session
+		provider = currentSessionCtx.Provider
+	}
 
 	// TODO: rework
 	type sessionInfo struct {
@@ -338,11 +345,13 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: return proper json response on accept json
 	// TODO: on HTML set flash message
-	currentSession, provider := op.getSession(w, r)
-	if currentSession == nil {
+	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	if currentSessionCtx == nil {
 		http.Error(w, "no session", http.StatusUnauthorized)
 		return
 	}
+	currentSession := currentSessionCtx.Session
+	provider := currentSessionCtx.Provider
 
 	newSession, err := provider.Refresh(r.Context(), currentSession)
 	if err != nil {
@@ -358,7 +367,7 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 
 	slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
-	err = op.setSession(w, r, newSession)
+	err = op.sessionManager.Set(w, r, newSession)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -376,47 +385,8 @@ func SessionFromContext(ctx context.Context) *Session {
 	return s
 }
 
-func ContextWithSession(parent context.Context, s *Session) context.Context {
+func ContextWithSession(parent context.Context, s *SessionContext) context.Context {
 	return context.WithValue(parent, sessionContextKey, s)
-}
-
-func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Session, *Provider) {
-	s := &Session{}
-	ok, err := op.cookieHandler.Get(r, op.sessionCookieName, s)
-	if !ok {
-		return nil, nil
-	}
-	if err != nil {
-		slog.Info("failed to decode session", "err", err)
-		op.deleteSession(w, r)
-		return nil, nil
-	}
-	provider, ok := op.providerMap[s.ProviderID]
-	if !ok {
-		slog.Info("session with unknown provider", "identifier", s.ProviderID)
-		op.deleteSession(w, r)
-		return nil, nil
-	}
-	return s, provider
-}
-
-func (op *Authenticator) setSession(w http.ResponseWriter, r *http.Request, s *Session) error {
-	if s == nil {
-		return fmt.Errorf("no session to set")
-	}
-	if s.Tokens.AccessToken == "" {
-		return fmt.Errorf("no access token")
-	}
-
-	err := op.cookieHandler.Set(w, r, op.sessionCookieName, s)
-	if err != nil {
-		slog.Error("failed to encode session state")
-	}
-	return err
-}
-
-func (op *Authenticator) deleteSession(w http.ResponseWriter, r *http.Request) {
-	op.cookieHandler.Delete(w, r, op.sessionCookieName)
 }
 
 func (op *Authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
@@ -558,14 +528,16 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 //
 // TODO: generalize logged out view
 func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	session, provider := op.getSession(w, r)
-	if session == nil {
+	sessionCtx, _ := op.sessionManager.Get(w, r)
+	if sessionCtx == nil {
 		fmt.Fprintln(w, "logged out")
 		return
 	}
+	session := sessionCtx.Session
+	provider := sessionCtx.Provider
 
 	// delete cookie
-	op.deleteSession(w, r)
+	op.sessionManager.Remove(w, r)
 
 	// revoke
 	if session.HasRefreshToken() {
@@ -641,7 +613,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	err = op.setSession(w, r, newSession)
+	err = op.sessionManager.Set(w, r, newSession)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

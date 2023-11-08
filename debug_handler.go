@@ -13,7 +13,17 @@ import (
 
 // DebugHandler returns information about the session including the tokens.
 func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
-	currentSession, provider := op.getSession(w, r)
+	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	var (
+		currentSession *Session
+		provider       *Provider
+	)
+
+	if currentSessionCtx != nil {
+		currentSession = currentSessionCtx.Session
+		provider = currentSessionCtx.Provider
+	}
+
 	w.Header().Add("Content-Type", "application/json")
 	info := struct {
 		Hostname string               `json:"hostname"`
