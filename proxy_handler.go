@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/oauth2"
 )
 
 type Config struct {
@@ -185,65 +183,6 @@ type Authenticator struct {
 	providerList []*Provider
 }
 
-type Tokens struct {
-	oauth2.Token
-	IDToken string `json:"id_token"`
-}
-
-type Session struct {
-	ProviderIdentifier string    `json:"provider_identifier"`
-	Expiry             time.Time `json:"expiry"`
-	Tokens             *Tokens
-	User               *User
-}
-
-func (s *Session) HasAccessToken() bool {
-	return s.Tokens != nil && s.Tokens.AccessToken != ""
-}
-
-func (s *Session) HasRefreshToken() bool {
-	return s.Tokens != nil && s.Tokens.RefreshToken != ""
-}
-
-func (s *Session) HasIDToken() bool {
-	return s.Tokens != nil && s.Tokens.IDToken != ""
-}
-
-func (s *Session) AccessToken() string {
-	if s.Tokens != nil {
-		return s.Tokens.AccessToken
-	}
-	return ""
-}
-
-func (s *Session) RefreshToken() string {
-	if s.Tokens != nil {
-		return s.Tokens.RefreshToken
-	}
-	return ""
-}
-
-func (s *Session) IDToken() string {
-	if s.Tokens != nil {
-		return s.Tokens.IDToken
-	}
-	return ""
-}
-
-type User struct {
-	ID     string
-	Name   string
-	Groups []string
-	Extra  any
-}
-
-func (s *Session) Valid() bool {
-	if s == nil {
-		return false
-	}
-	return s.Expiry.After(time.Now())
-}
-
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == op.sessionInfoPath {
@@ -290,21 +229,14 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 		// run silent refresh or redirect to login if session expired
 		if !currentSession.Valid() {
-			if currentSession.Tokens == nil || currentSession.Tokens.RefreshToken == "" {
+			if !currentSession.HasRefreshToken() {
 				slog.Debug("no refresh token available: initiate login")
 				op.RedirectToLogin(w, r)
 			}
 
-			newTokens, err := provider.refresh(r.Context(), currentSession.RefreshToken())
+			newSession, err := provider.Refresh(r.Context(), currentSession)
 			if err != nil {
 				slog.Info("token refresh failed. initiate login", "err", err)
-				op.RedirectToLogin(w, r)
-				return
-			}
-
-			newSession, err := provider.newSession(r.Context(), newTokens)
-			if err != nil {
-				slog.Info("session initialization failed after refresh. initiate login", "err", err)
 				op.RedirectToLogin(w, r)
 				return
 			}
@@ -412,14 +344,7 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	newTokens, err := provider.refresh(r.Context(), currentSession.RefreshToken())
-	if err != nil {
-		slog.Info("token refresh failed", "err", err)
-		http.Error(w, "refresh failed", http.StatusInternalServerError)
-		return
-	}
-
-	newSession, err := provider.newSession(r.Context(), newTokens)
+	newSession, err := provider.Refresh(r.Context(), currentSession)
 	if err != nil {
 		slog.Info("session initialization after token refresh failed", "err", err)
 
@@ -466,9 +391,9 @@ func (op *Authenticator) getSession(w http.ResponseWriter, r *http.Request) (*Se
 		op.deleteSession(w, r)
 		return nil, nil
 	}
-	provider, ok := op.providerMap[s.ProviderIdentifier]
+	provider, ok := op.providerMap[s.ProviderID]
 	if !ok {
-		slog.Info("session with unknown provider", "identifier", s.ProviderIdentifier)
+		slog.Info("session with unknown provider", "identifier", s.ProviderID)
 		op.deleteSession(w, r)
 		return nil, nil
 	}
@@ -618,7 +543,11 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirectURL := provider.authCodeURL(r.Context(), state.State)
+	redirectURL, err := provider.AuthorizationEndpoint(r.Context(), state.State)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
 	slog.Debug("redirect for authentication", "url", redirectURL)
 	http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 }
@@ -639,21 +568,24 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	op.deleteSession(w, r)
 
 	// revoke
-	revocationURL := provider.config.RevocationEndpoint
-	if revocationURL != "" && session.Tokens != nil && session.Tokens.RefreshToken != "" {
-		err := provider.revoke(r.Context(), session.Tokens.RefreshToken)
-		if err != nil {
+	if session.HasRefreshToken() {
+		err := provider.Revoke(r.Context(), session.RefreshToken())
+		if err != nil && err != ErrNotSupported {
 			slog.Warn("failed to revoke token", "err", err)
 		}
 	}
 
 	// logut
-	endSessionURL := provider.config.EndSessionEndpoint
-	if endSessionURL != "" {
-		logoutURL := provider.rpInitiatedLogoutURL(r.Context(), session.Tokens)
-		http.Redirect(w, r, logoutURL, http.StatusSeeOther)
+	endSessionURL, err := provider.EndSessionEndpoint(r.Context(), session)
+	if err != nil && err != ErrNotSupported {
+		slog.Warn("failed to obtain end session endpoint", "err", err)
+	}
+
+	if err == nil {
+		http.Redirect(w, r, endSessionURL, http.StatusSeeOther)
 		return
 	}
+
 	fmt.Fprintln(w, "logged out")
 }
 
@@ -684,19 +616,20 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if !params.Has("code") {
+		slog.Info("login failed", "error", "code missing")
+		op.renderLoginResult(w, nil, "code missing")
+		return
+
+	}
+	code := params.Get("code")
+
 	provider, ok := op.providerMap[loginState.ProviderIdentifier]
 	if !ok {
 		http.Error(w, "invalid state unknown provider", http.StatusBadRequest)
 		return
 	}
-	tokens, err := provider.exchange(r.Context(), r.URL.Query().Get("code"))
-	if err != nil {
-		slog.Info("token exchange failed", "err", err)
-		http.Error(w, "login failed", http.StatusInternalServerError)
-		return
-	}
-
-	newSession, err := provider.newSession(r.Context(), tokens)
+	newSession, err := provider.Exchange(r.Context(), code)
 	if err != nil {
 		slog.Info("session initialization failed", "err", err)
 
@@ -714,7 +647,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Info("token successfuly issued", "refresh_token", tokens.RefreshToken != "")
+	slog.Info("session initiated", "refresh_token", newSession.HasRefreshToken())
 
 	originURI := loginState.URI
 	if originURI == "" {
