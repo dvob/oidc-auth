@@ -3,17 +3,12 @@ package oidcproxy
 import (
 	"context"
 	"crypto/rand"
-	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"sync"
 	"time"
 )
 
@@ -54,33 +49,15 @@ type Config struct {
 
 	// Used in templates
 	AppName string
+
+	TemplateDir     string
+	TemplateDevMode bool
 }
 
-//go:embed templates/*
-var templateFS embed.FS
-
 func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
-	var (
-		devMode   = false
-		templates map[string]*template.Template
-	)
-
-	if devMode {
-		var err error
-		templateDirFS := os.DirFS("templates")
-		templates, err = parsePageTemplates(templateDirFS)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		templateDirFS, err := fs.Sub(templateFS, "templates")
-		if err != nil {
-			return nil, err
-		}
-		templates, err = parsePageTemplates(templateDirFS)
-		if err != nil {
-			return nil, err
-		}
+	templateManager, err := newTemplateManager(config.TemplateDir, config.TemplateDevMode)
+	if err != nil {
+		return nil, err
 	}
 
 	// validate and prepare config
@@ -143,9 +120,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 
 		sessionManager: newSessionManager(hashKey, encKey, providers),
 
-		devMode:   devMode,
-		mu:        &sync.Mutex{},
-		templates: templates,
+		templateManager: templateManager,
 	}, nil
 }
 
@@ -162,9 +137,7 @@ type Authenticator struct {
 
 	sessionManager *sessionManager
 
-	devMode   bool
-	mu        *sync.Mutex
-	templates map[string]*template.Template
+	templateManager *templateManager
 }
 
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
@@ -322,7 +295,7 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	op.servePage(w, "session_info", info)
+	op.templateManager.servePage(w, "session_info", info)
 }
 
 // RefreshHandler handles exlicit refresh which prints the outcome to the
@@ -417,7 +390,7 @@ func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
 		})
 	}
 
-	op.servePage(w, "login_provider_selection", loginProviderData)
+	op.templateManager.servePage(w, "login_provider_selection", loginProviderData)
 }
 
 // LoginHandler initiates the state and redirects the request to the providers
@@ -605,7 +578,7 @@ func (op *Authenticator) renderLoginResult(w http.ResponseWriter, session *Sessi
 		// TODO: could also be 401
 		w.WriteHeader(http.StatusInternalServerError)
 	}
-	op.servePage(w, "login_result", data)
+	op.templateManager.servePage(w, "login_result", data)
 }
 
 func randString(randomBytesLen int) (string, error) {

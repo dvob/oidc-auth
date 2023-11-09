@@ -36,6 +36,8 @@ func Run() error {
 		upstream        string
 		providerConfig  string
 		showVersion     bool
+		templateDir     string
+		templateDevMode bool
 	)
 
 	// proxy options
@@ -50,6 +52,9 @@ func Run() error {
 	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
 	flag.StringVar(&providerConfig, "provider-config", providerConfig, "provider config file")
+
+	flag.StringVar(&templateDir, "template-dir", templateDir, "template dir to overwrite existing templates")
+	flag.BoolVar(&templateDevMode, "template-dev-mode", templateDevMode, "reload templates on each request")
 
 	flag.StringVar(&upstream, "upstream", upstream, "url of the upsream. if not configured debug page is shown.")
 
@@ -112,6 +117,9 @@ func Run() error {
 		DebugPath:       "/debug",
 		RefreshPath:     "/refresh",
 		SessionInfoPath: "/info",
+
+		TemplateDir:     templateDir,
+		TemplateDevMode: templateDevMode,
 
 		HashKey:    []byte(cookieHashKey),
 		EncryptKey: []byte(cookieEncKey),
