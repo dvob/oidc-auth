@@ -41,11 +41,12 @@
       </p>
       {{ end }}
 
-      {{ if .Valid }}
+      {{ if . }}
       <form method="GET" action="/logout">
         <button type="submit">Logout</button>
       </form>
-      {{ else }}
+      {{ end }}
+      {{ if not .Valid }}
       <form method="GET" action="/login">
         <button type="submit">Login</button>
       </form>
