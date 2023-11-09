@@ -377,3 +377,36 @@ func NewUserError(err error, code int, userErrorMessage string) *userError {
 		err:              err,
 	}
 }
+
+type providerSet struct {
+	providerList []*Provider
+	providerMap  map[string]*Provider
+}
+
+func newProviderSet(providers ...*Provider) (*providerSet, error) {
+	providerMap := map[string]*Provider{}
+	for _, p := range providers {
+		p := p
+		if existing, ok := providerMap[p.ID()]; ok {
+			return nil, fmt.Errorf("duplicate provider %s (%s) and %s (%s)", existing.config.Name, existing.config.IssuerURL, p.config.Name, p.config.IssuerURL)
+		}
+
+		providerMap[p.ID()] = p
+	}
+	return &providerSet{
+		providerList: providers,
+		providerMap:  providerMap,
+	}, nil
+}
+
+func (ps *providerSet) GetByID(id string) (*Provider, error) {
+	provider, ok := ps.providerMap[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown provider with id '%s'", id)
+	}
+	return provider, nil
+}
+
+func (ps *providerSet) List() []*Provider {
+	return ps.providerList
+}

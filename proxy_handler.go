@@ -110,11 +110,9 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 
-	cookieHandler := NewCookieHandler(hashKey, encKey)
-
 	// Setup providerMap
-	providerMap := map[string]*Provider{}
 	providerList := []*Provider{}
+
 	for _, providerConfig := range config.Providers {
 		if providerConfig.CallbackURL == "" {
 			providerConfig.CallbackURL = config.CallbackURL
@@ -129,13 +127,10 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 			return nil, fmt.Errorf("failed to initialize provider '%s': %w", providerConfig.IssuerURL, err)
 		}
 
-		if existing, ok := providerMap[provider.ID()]; ok {
-			return nil, fmt.Errorf("duplicate provider %s (%s) and %s (%s)", existing.config.Name, existing.config.IssuerURL, provider.config.Name, provider.config.IssuerURL)
-		}
-
-		providerMap[provider.ID()] = provider
 		providerList = append(providerList, provider)
 	}
+
+	providers, err := newProviderSet(providerList...)
 
 	return &Authenticator{
 		appName:         config.AppName,
@@ -146,16 +141,11 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		logoutPath:      config.LogoutPath,
 		debugPath:       config.DebugPath,
 
-		cookieHandler:        cookieHandler,
-		sessionManager:       newSessionManager(hashKey, encKey, providerMap),
-		loginStateCookieName: "state",
+		sessionManager: newSessionManager(hashKey, encKey, providers),
 
 		devMode:   devMode,
 		mu:        &sync.Mutex{},
 		templates: templates,
-
-		providerMap:  providerMap,
-		providerList: providerList,
 	}, nil
 }
 
@@ -170,16 +160,11 @@ type Authenticator struct {
 	logoutPath      string
 	debugPath       string
 
-	cookieHandler        *CookieHandler
-	sessionManager       *sessionManager
-	loginStateCookieName string
+	sessionManager *sessionManager
 
 	devMode   bool
 	mu        *sync.Mutex
 	templates map[string]*template.Template
-
-	providerMap  map[string]*Provider
-	providerList []*Provider
 }
 
 func (op *Authenticator) Handler(next http.Handler) http.Handler {
@@ -219,7 +204,7 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 		}
 
 		// check session
-		currentSessionCtx, _ := op.sessionManager.Get(w, r)
+		currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
 		if currentSessionCtx == nil {
 			slog.Debug("no session available: initiate login")
 			op.RedirectToLogin(w, r)
@@ -245,7 +230,7 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 			slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
-			err = op.sessionManager.Set(w, r, newSession)
+			err = op.sessionManager.SetSession(w, r, newSession)
 			if err != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 				return
@@ -264,14 +249,14 @@ func (op *Authenticator) Handler(next http.Handler) http.Handler {
 
 func (op *Authenticator) LoadSessionHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		currentSessionCtx, _ := op.sessionManager.Get(w, r)
+		currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
 		r = r.WithContext(ContextWithSession(r.Context(), currentSessionCtx))
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (op *Authenticator) RemoveSession(w http.ResponseWriter, r *http.Request) {
-	op.sessionManager.Remove(w, r)
+	op.sessionManager.RemoveSession(w, r)
 	return
 }
 
@@ -280,7 +265,7 @@ func (op *Authenticator) RemoveCookie(r *http.Request) {
 }
 
 func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Request) {
-	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
 	var (
 		currentSession *Session
 		provider       *Provider
@@ -345,7 +330,7 @@ func (op *Authenticator) SessionInfoHandler(w http.ResponseWriter, r *http.Reque
 func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: return proper json response on accept json
 	// TODO: on HTML set flash message
-	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
 	if currentSessionCtx == nil {
 		http.Error(w, "no session", http.StatusUnauthorized)
 		return
@@ -367,7 +352,7 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 
 	slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
-	err = op.sessionManager.Set(w, r, newSession)
+	err = op.sessionManager.SetSession(w, r, newSession)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -380,45 +365,13 @@ type contextKey int
 
 const sessionContextKey contextKey = 0
 
-func SessionFromContext(ctx context.Context) *Session {
-	s, _ := ctx.Value(sessionContextKey).(*Session)
+func SessionFromContext(ctx context.Context) *SessionContext {
+	s, _ := ctx.Value(sessionContextKey).(*SessionContext)
 	return s
 }
 
 func ContextWithSession(parent context.Context, s *SessionContext) context.Context {
 	return context.WithValue(parent, sessionContextKey, s)
-}
-
-func (op *Authenticator) getLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
-	loginState := &LoginState{}
-	ok, err := op.cookieHandler.Get(r, op.loginStateCookieName, loginState)
-	if !ok {
-		return nil
-	}
-	if err != nil {
-		slog.Info("failed to decode login state", "err", err)
-		op.deleteLoginState(w, r)
-		return nil
-	}
-	return loginState
-}
-
-func (op *Authenticator) setLoginState(w http.ResponseWriter, r *http.Request, l *LoginState) error {
-	err := op.cookieHandler.Set(w, r, op.loginStateCookieName, l)
-	if err != nil {
-		slog.Error("failed to encode login state", "err", err)
-	}
-	return err
-}
-
-func (op *Authenticator) deleteLoginState(w http.ResponseWriter, r *http.Request) {
-	op.cookieHandler.Delete(w, r, op.loginStateCookieName)
-}
-
-type LoginState struct {
-	State              string
-	URI                string
-	ProviderIdentifier string
 }
 
 // RedirectToLogin remembers the current uri to redirect you back there after
@@ -429,7 +382,7 @@ func (op *Authenticator) RedirectToLogin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	originURI := r.URL.RequestURI()
-	op.setLoginState(w, r, &LoginState{URI: originURI})
+	op.sessionManager.SetLoginState(w, r, &LoginState{URI: originURI})
 	http.Redirect(w, r, op.loginPath, http.StatusSeeOther)
 }
 
@@ -448,7 +401,7 @@ func (op *Authenticator) renderLoginProviderSelection(w http.ResponseWriter) {
 		Name: op.appName,
 	}
 
-	for _, provider := range op.providerList {
+	for _, provider := range op.sessionManager.providerSet.List() {
 
 		href := &url.URL{
 			Path: op.loginPath,
@@ -473,8 +426,9 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	providerID := r.URL.Query().Get("provider")
 
 	// if provider is not set and there is only one configured we use that one
-	if len(op.providerList) == 1 && providerID == "" {
-		providerID = op.providerList[0].ID()
+	providers := op.sessionManager.providerSet.List()
+	if len(providers) == 1 && providerID == "" {
+		providerID = providers[0].ID()
 	}
 
 	if providerID == "" {
@@ -482,9 +436,10 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, ok := op.providerMap[providerID]
-	if !ok {
-		http.Error(w, "unknown provider", http.StatusBadRequest)
+	provider, err := op.sessionManager.providerSet.GetByID(providerID)
+	if err != nil {
+		slog.Error("invalid provider", "err", err)
+		http.Error(w, "invalid provider", http.StatusBadRequest)
 		return
 	}
 
@@ -496,18 +451,18 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state := op.getLoginState(w, r)
+	state := op.sessionManager.GetLoginState(w, r)
 	if state == nil {
 		state = &LoginState{
-			ProviderIdentifier: providerID,
-			State:              stateStr,
+			ProviderID: providerID,
+			State:      stateStr,
 		}
 	} else {
-		state.ProviderIdentifier = providerID
+		state.ProviderID = providerID
 		state.State = stateStr
 	}
 
-	err = op.setLoginState(w, r, state)
+	err = op.sessionManager.SetLoginState(w, r, state)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -528,7 +483,7 @@ func (op *Authenticator) LoginHandler(w http.ResponseWriter, r *http.Request) {
 //
 // TODO: generalize logged out view
 func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	sessionCtx, _ := op.sessionManager.Get(w, r)
+	sessionCtx, _ := op.sessionManager.GetSession(w, r)
 	if sessionCtx == nil {
 		fmt.Fprintln(w, "logged out")
 		return
@@ -537,7 +492,7 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	provider := sessionCtx.Provider
 
 	// delete cookie
-	op.sessionManager.Remove(w, r)
+	op.sessionManager.RemoveSession(w, r)
 
 	// revoke
 	if session.HasRefreshToken() {
@@ -567,13 +522,13 @@ func (op *Authenticator) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 //   - initiates the sessoin (set cookies)
 //   - redirect back to the uri you came from if set
 func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request) {
-	loginState := op.getLoginState(w, r)
+	loginState := op.sessionManager.GetLoginState(w, r)
 	if loginState == nil {
 		http.Error(w, "state cookie missing", http.StatusBadRequest)
 		return
 	}
 
-	op.deleteLoginState(w, r)
+	op.sessionManager.DeleteLoginState(w, r)
 
 	state := r.URL.Query().Get("state")
 	if state != loginState.State {
@@ -596,9 +551,10 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 	code := params.Get("code")
 
-	provider, ok := op.providerMap[loginState.ProviderIdentifier]
-	if !ok {
-		http.Error(w, "invalid state unknown provider", http.StatusBadRequest)
+	provider, err := op.sessionManager.providerSet.GetByID(loginState.ProviderID)
+	if err != nil {
+		slog.Error("invalid provider", "err", err)
+		http.Error(w, "invalid state", http.StatusBadRequest)
 		return
 	}
 	newSession, err := provider.Exchange(r.Context(), code)
@@ -613,7 +569,7 @@ func (op *Authenticator) CallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	err = op.sessionManager.Set(w, r, newSession)
+	err = op.sessionManager.SetSession(w, r, newSession)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return

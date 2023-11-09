@@ -13,7 +13,7 @@ import (
 
 // DebugHandler returns information about the session including the tokens.
 func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
-	currentSessionCtx, _ := op.sessionManager.Get(w, r)
+	currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
 	var (
 		currentSession *Session
 		provider       *Provider
