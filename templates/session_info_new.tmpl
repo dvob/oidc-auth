@@ -1,0 +1,67 @@
+ <!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Session Info</title>
+    <style>
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Session Info</h1>
+      {{ if . }}
+      {{ if .Valid }}
+        <p><span>Expiry: </span><time datetime="{{ .Session.Expiry | timeFmt }}">{{ .Session.Expiry }}</time></p>
+        <p><span>Provider: </span>{{ .Provider }}</p>
+        <p><span>Access Token Available: </span>{{ .Session.HasAccessToken }}</p>
+        <p><span>Refresh Token Available: </span>{{ .Session.HasRefreshToken }}</p>
+        <p><span>ID Token Available: </span>{{ .Session.HasIDToken }}</p>
+        {{ with .Session.User }}
+          <p><span>User ID: </span>{{ .ID }}</p>
+          <p><span>User: </span>{{ .Name }}</p>
+          {{ with .Groups }}
+            <p><span>Groups: </span></p>
+            <ul>
+            {{ range . }} <li>{{ . }}</li> {{ end }}
+            </ul>
+          {{ end }}
+        {{ end }}
+      {{ else }}
+      <p>
+	  <span>Your session expired at </span><time datetime="{{ .Expiry | timeFmt }}">{{ .Expiry }}</time>.
+      </p>
+        {{ if .HasRefreshToken }}
+        <p>Your session can potentially be reactived using the existing refresh token</p>
+        {{ end }}
+      {{ end }}
+
+      {{ else }}
+      <p>
+	  You are not logged in.
+      </p>
+      {{ end }}
+
+      {{ if .Valid }}
+      <form method="GET" action="/logout">
+        <button type="submit">Logout</button>
+      </form>
+      {{ else }}
+      <form method="GET" action="/login">
+        <button type="submit">Login</button>
+      </form>
+      {{ end }}
+      {{ if and . .HasRefreshToken }}
+      <form method="GET" action="/refresh">
+        <button type="submit">Refresh</button>
+      </form>
+      {{ end }}
+    </main>
+    <script>
+      const userLocale = navigator.language || navigator.userLanguage;
+      document.querySelectorAll("time").forEach(e => {
+        let d = new Date(e.dateTime)
+        e.innerHTML = d.toLocaleString(userLocale, { hour12: false})
+      })
+    </script>
+  </body>
+</html> 

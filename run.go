@@ -1,7 +1,6 @@
 package oidcproxy
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -125,14 +124,9 @@ func Run() error {
 		EncryptKey: []byte(cookieEncKey),
 	}
 
-	authenticator, err := NewAuthenticator(context.Background(), config)
-	if err != nil {
-		return err
-	}
-
 	var inner http.Handler
 	if upstream != "" {
-		inner, err = newForwardHandler(upstream, authenticator.RemoveCookie)
+		inner, err = newForwardHandler(upstream, nil)
 		if err != nil {
 			return err
 		}
@@ -147,7 +141,12 @@ func Run() error {
 		})
 	}
 
-	authenticated := authenticator.Handler(inner)
+	authenticated, err := NewMainHandler(config, inner)
+	if err != nil {
+		return err
+	}
+
+	//authenticated := authenticator.Handler(inner)
 
 	logger := newLogHandler(authenticated)
 

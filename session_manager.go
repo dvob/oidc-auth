@@ -1,6 +1,7 @@
 package oidcproxy
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,7 +15,14 @@ type sessionManager struct {
 	logger               *slog.Logger
 }
 
-func newSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet) *sessionManager {
+func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet) (*sessionManager, error) {
+	if !(len(hashKey) == 32 || len(hashKey) == 64) {
+		return nil, fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
+	}
+	if !(len(encryptionKey) == 0 || len(encryptionKey) == 32 || len(encryptionKey) == 64) {
+		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
+	}
+
 	cookieHandler := NewCookieHandler(hashKey, encryptionKey)
 	return &sessionManager{
 		cookieHandler:        cookieHandler,
@@ -22,12 +30,19 @@ func newSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet) 
 		sessionCookieName:    "oprox",
 		providerSet:          providerSet,
 		logger:               slog.Default(),
-	}
+	}, nil
 }
 
 type SessionContext struct {
 	*Session
 	Provider *Provider
+}
+
+func (s *SessionContext) Valid() bool {
+	if s == nil {
+		return false
+	}
+	return s.Session.Valid()
 }
 
 // GetSession returns the SessionContext for the Request if available.

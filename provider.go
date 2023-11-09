@@ -361,11 +361,13 @@ type UserError interface {
 
 type userError struct {
 	userErrorMessage string
+	httpCode         int
 	err              error
 }
 
 func (ue *userError) Error() string     { return ue.err.Error() }
 func (ue *userError) UserError() string { return ue.userErrorMessage }
+func (ue *userError) HTTPCode() int     { return ue.httpCode }
 func (ue *userError) Unwrap() error     { return ue.err }
 
 func NewUserError(err error, code int, userErrorMessage string) *userError {
@@ -381,6 +383,22 @@ func NewUserError(err error, code int, userErrorMessage string) *userError {
 type providerSet struct {
 	providerList []*Provider
 	providerMap  map[string]*Provider
+}
+
+func NewProviderSet(ctx context.Context, providerConfigs []ProviderConfig, modifier func(pc *ProviderConfig)) ([]*Provider, error) {
+	providerList := []*Provider{}
+	for _, config := range providerConfigs {
+		config := config.Clone()
+		modifier(&config)
+
+		provider, err := NewProvider(ctx, config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize provider '%s': %w", config.IssuerURL, err)
+		}
+
+		providerList = append(providerList, provider)
+	}
+	return providerList, nil
 }
 
 func newProviderSet(providers ...*Provider) (*providerSet, error) {

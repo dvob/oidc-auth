@@ -77,15 +77,6 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	}
 
 	// Setup Cookiehandler
-	hashKey := config.HashKey
-	encKey := config.EncryptKey
-
-	if !(len(hashKey) == 32 || len(hashKey) == 64) {
-		return nil, fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
-	}
-	if !(len(encKey) == 0 || len(encKey) == 32 || len(encKey) == 64) {
-		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
-	}
 
 	// Setup providerMap
 	providerList := []*Provider{}
@@ -109,6 +100,11 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 
 	providers, err := newProviderSet(providerList...)
 
+	sessionManager, err := NewSessionManager(config.HashKey, config.EncryptKey, providers)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Authenticator{
 		appName:         config.AppName,
 		loginPath:       config.LoginPath,
@@ -118,7 +114,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 		logoutPath:      config.LogoutPath,
 		debugPath:       config.DebugPath,
 
-		sessionManager: newSessionManager(hashKey, encKey, providers),
+		sessionManager: sessionManager,
 
 		templateManager: templateManager,
 	}, nil
