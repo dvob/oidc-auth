@@ -52,6 +52,7 @@ func AuthenticateHandler(sm *sessionManager, loginEndpoint string, next http.Han
 			if !currentSession.HasRefreshToken() {
 				slog.Debug("no refresh token available: initiate login")
 				redirectToLogin(w, r)
+				return
 			}
 
 			newSession, err := currentSession.Provider.Refresh(r.Context(), currentSession.Session)
