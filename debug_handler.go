@@ -1,64 +1,53 @@
 package oidcproxy
 
 import (
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
 
 // DebugHandler returns information about the session including the tokens.
-func (op *Authenticator) DebugHandler(w http.ResponseWriter, r *http.Request) {
-	currentSessionCtx, _ := op.sessionManager.GetSession(w, r)
-	var (
-		currentSession *Session
-		provider       *Provider
-	)
-
-	if currentSessionCtx != nil {
-		currentSession = currentSessionCtx.Session
-		provider = currentSessionCtx.Provider
+func DebugHandler(sm *sessionManager, providers []*Provider) http.Handler {
+	pcs := []ProviderConfig{}
+	for _, p := range providers {
+		config := p.Config()
+		config.ID = p.ID()
+		config.ClientSecret = "****"
+		pcs = append(pcs, config)
 	}
 
-	w.Header().Add("Content-Type", "application/json")
-	info := struct {
-		Hostname string               `json:"hostname"`
-		Request  *request             `json:"request"`
-		TLS      *tls.ConnectionState `json:"tls"`
-		JWT      *jwt                 `json:"jwt"`
-		Provider struct {
-			ID     string         `json:"id"`
-			Config ProviderConfig `json:"config"`
-		} `json:"provider"`
-		Session    *Session
-		SessionJWT struct {
-			AccessToken  *jwt `json:"access_token"`
-			RefreshToken *jwt `json:"refresh_token"`
-			IDToken      *jwt `json:"id_token"`
-		} `json:"session_jwt"`
-	}{}
-	if provider != nil {
-		info.Provider.Config = provider.Config()
-		info.Provider.ID = provider.ID()
-	}
-	info.Hostname, _ = os.Hostname()
-	info.Request = newRequest(r)
-	info.TLS = r.TLS
-	info.JWT = readJWT(readBearer(r))
-	info.Session = currentSession
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, _ := sm.GetSession(w, r)
+		data := struct {
+			ProviderConfigs []ProviderConfig `json:"provider_configs"`
+			Session         *Session         `json:"session"`
+			SessionJWT      struct {
+				AccessToken  *jwt `json:"access_token"`
+				RefreshToken *jwt `json:"refresh_token"`
+				IDToken      *jwt `json:"id_token"`
+			} `json:"session_jwt"`
+			Request *request `json:"request"`
+		}{
+			ProviderConfigs: pcs,
+			Request:         newRequest(r),
+		}
+		if session != nil {
+			data.Session = session.Session
+			data.SessionJWT.AccessToken = readJWT(session.AccessToken())
+			data.SessionJWT.RefreshToken = readJWT(session.RefreshToken())
+			data.SessionJWT.IDToken = readJWT(session.IDToken())
+		}
 
-	info.SessionJWT.AccessToken = readJWT(currentSession.AccessToken())
-	info.SessionJWT.RefreshToken = readJWT(currentSession.RefreshToken())
-	info.SessionJWT.IDToken = readJWT(currentSession.IDToken())
+		w.Header().Add("Content-Type", "application/json")
+		err := json.NewEncoder(w).Encode(data)
+		if err != nil {
+			slog.Info("failed to encode json in info handler", "err", err)
+		}
+	})
 
-	err := json.NewEncoder(w).Encode(info)
-	if err != nil {
-		slog.Info("failed to encode json in info handler", "err", err)
-	}
 }
 
 type request struct {
@@ -68,7 +57,6 @@ type request struct {
 	Protocol   string      `json:"protocol"`
 	Header     http.Header `json:"header"`
 	RemoteAddr string      `json:"remote_addr"`
-	// TLS evtl.
 }
 
 func newRequest(r *http.Request) *request {

@@ -2,7 +2,6 @@ package oidcproxy
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 )
 
@@ -108,13 +107,6 @@ func (a *App) NewAuthHandler(next http.Handler) (http.Handler, error) {
 	mux.Handle("/", AuthenticateHandler(a.SessionManager, a.Config.ExternalLoginPath, next))
 
 	// TODO: remove
-	mux.Handle("/debug", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cs := []ProviderConfig{}
-		for _, p := range a.Providers {
-			cs = append(cs, p.Config())
-		}
-
-		json.NewEncoder(w).Encode(cs)
-	}))
+	mux.Handle("/debug", DebugHandler(a.SessionManager, a.Providers))
 	return mux, nil
 }

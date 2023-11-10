@@ -1,6 +1,8 @@
 package oidcproxy
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"log/slog"
 	"net/http"
 	"net/url"

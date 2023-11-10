@@ -1,6 +1,7 @@
 package oidcproxy
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
