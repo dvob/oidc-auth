@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"testing"
-	"time"
 )
 
 func TestRemoveOldCookies(t *testing.T) {
@@ -188,23 +187,4 @@ func randData(n int) string {
 		b[i] = letterBytes[int(r[i])%len(letterBytes)]
 	}
 	return string(b)
-}
-
-func responseIntoRequest(resp *http.Response) *http.Request {
-	req := &http.Request{
-		Header: make(http.Header),
-	}
-	newCookies := []string{}
-	for _, c := range resp.Cookies() {
-		if c.MaxAge < 0 || (!c.Expires.IsZero() && time.Now().After(c.Expires)) {
-			continue
-		}
-		newC := &http.Cookie{
-			Name:  c.Name,
-			Value: c.Value,
-		}
-		newCookies = append(newCookies, newC.String())
-	}
-	req.Header["Cookie"] = newCookies
-	return req
 }

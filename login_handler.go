@@ -103,3 +103,13 @@ func ProviderSelectionHandler(appName string, providers []*Provider, tm *templat
 		tm.servePage(w, "login_provider_selection", loginProviderData)
 	})
 }
+
+func randString(randomBytesLen int) (string, error) {
+	randomBytes := make([]byte, randomBytesLen)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
+}

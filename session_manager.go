@@ -107,11 +107,6 @@ type LoginState struct {
 	URI        string
 }
 
-type LoginStateContext struct {
-	*LoginState
-	provider *Provider
-}
-
 func (sm *sessionManager) GetLoginState(w http.ResponseWriter, r *http.Request) *LoginState {
 	loginState := &LoginState{}
 	ok, err := sm.cookieHandler.Get(r, sm.loginStateCookieName, loginState)
@@ -136,4 +131,17 @@ func (sm *sessionManager) SetLoginState(w http.ResponseWriter, r *http.Request, 
 
 func (sm *sessionManager) DeleteLoginState(w http.ResponseWriter, r *http.Request) {
 	sm.cookieHandler.Delete(w, r, sm.loginStateCookieName)
+}
+
+type contextKey int
+
+const sessionContextKey contextKey = 0
+
+func SessionFromContext(ctx context.Context) *SessionContext {
+	s, _ := ctx.Value(sessionContextKey).(*SessionContext)
+	return s
+}
+
+func ContextWithSession(parent context.Context, s *SessionContext) context.Context {
+	return context.WithValue(parent, sessionContextKey, s)
 }

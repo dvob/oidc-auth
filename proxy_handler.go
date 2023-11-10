@@ -46,6 +46,9 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	}
 
 	providers, err := newProviderSet(providerList...)
+	if err != nil {
+		return nil, err
+	}
 
 	sessionManager, err := NewSessionManager(config.HashKey, config.EncryptKey, providers)
 	if err != nil {
@@ -173,7 +176,6 @@ func (op *Authenticator) LoadSessionHandler(next http.Handler) http.Handler {
 
 func (op *Authenticator) RemoveSession(w http.ResponseWriter, r *http.Request) {
 	op.sessionManager.RemoveSession(w, r)
-	return
 }
 
 func (op *Authenticator) RemoveCookie(r *http.Request) {
@@ -275,19 +277,6 @@ func (op *Authenticator) RefreshHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	http.Redirect(w, r, op.sessionInfoPath, http.StatusSeeOther)
-}
-
-type contextKey int
-
-const sessionContextKey contextKey = 0
-
-func SessionFromContext(ctx context.Context) *SessionContext {
-	s, _ := ctx.Value(sessionContextKey).(*SessionContext)
-	return s
-}
-
-func ContextWithSession(parent context.Context, s *SessionContext) context.Context {
-	return context.WithValue(parent, sessionContextKey, s)
 }
 
 // RedirectToLogin remembers the current uri to redirect you back there after
@@ -522,14 +511,4 @@ func (op *Authenticator) renderLoginResult(w http.ResponseWriter, session *Sessi
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	op.templateManager.servePage(w, "login_result", data)
-}
-
-func randString(randomBytesLen int) (string, error) {
-	randomBytes := make([]byte, randomBytesLen)
-	_, err := rand.Read(randomBytes)
-	if err != nil {
-		return "", err
-	}
-
-	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }
