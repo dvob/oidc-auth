@@ -21,39 +21,35 @@ var (
 func Run() error {
 	var (
 		defaultProvider = ProviderConfig{}
-		issuerURL       string
-		clientID        string
-		clientSecret    string
-		callbackURL     string
-		postLogoutURL   string
 		scopes          string
+		providerConfig  string
+		config          = NewDefaultConfig()
 		cookieHashKey   string
 		cookieEncKey    string
 		listenAddr      = "localhost:8080"
 		tlsCert         string
 		tlsKey          string
 		upstream        string
-		providerConfig  string
 		showVersion     bool
-		templateDir     string
-		templateDevMode bool
 	)
 
 	// proxy options
+	flag.StringVar(&defaultProvider.IssuerURL, "issuer-url", defaultProvider.IssuerURL, "oidc issuer url")
+	flag.StringVar(&defaultProvider.ClientID, "client-id", defaultProvider.ClientID, "client id")
+	flag.StringVar(&defaultProvider.ClientSecret, "client-secret", defaultProvider.ClientSecret, "client secret id")
 	defaultScopes := []string{oidc.ScopeOpenID, "email", "profile", oidc.ScopeOfflineAccess}
-	flag.StringVar(&defaultProvider.IssuerURL, "issuer-url", issuerURL, "oidc issuer url")
-	flag.StringVar(&defaultProvider.ClientID, "client-id", clientID, "client id")
-	flag.StringVar(&defaultProvider.ClientSecret, "client-secret", clientSecret, "client secret id")
 	flag.StringVar(&scopes, "scopes", strings.Join(defaultScopes, ","), "a comma-seperated list of scopes")
 
-	flag.StringVar(&callbackURL, "callback-url", callbackURL, "callback URL")
-	flag.StringVar(&postLogoutURL, "post-logout-url", postLogoutURL, "post logout redirect uri")
-	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
-	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
 	flag.StringVar(&providerConfig, "provider-config", providerConfig, "provider config file")
 
-	flag.StringVar(&templateDir, "template-dir", templateDir, "template dir to overwrite existing templates")
-	flag.BoolVar(&templateDevMode, "template-dev-mode", templateDevMode, "reload templates on each request")
+	flag.StringVar(&config.CallbackURL, "callback-url", config.CallbackURL, "callback URL")
+	flag.StringVar(&config.PostLogoutRediretURI, "post-logout-url", config.PostLogoutRediretURI, "post logout redirect uri")
+	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
+	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
+
+	flag.StringVar(&config.TemplateDir, "template-dir", config.TemplateDir, "template dir to overwrite existing templates")
+	flag.BoolVar(&config.TemplateDevMode, "template-dev-mode", config.TemplateDevMode, "reload templates on each request")
+	flag.StringVar(&config.AppName, "app-name", config.AppName, "app name to show on the provider selection login screen")
 
 	flag.StringVar(&upstream, "upstream", upstream, "url of the upsream. if not configured debug page is shown.")
 
@@ -92,7 +88,7 @@ func Run() error {
 	}
 
 	for i := range providers {
-		providers[i].SetupSessionFunc = ChainSessionSetupFunc(SaveGroups()) //, RequireIDTokenGroup("B2BX_D3_ADMINAPI_ADMIN"))
+		providers[i].SetupSessionFunc = ChainSessionSetupFunc(SaveGroups())
 	}
 
 	if len(providers) == 0 {
@@ -103,26 +99,9 @@ func Run() error {
 		slog.Info("configured provider", "client_id", p.ClientID, "issuer_url", p.IssuerURL, "name", p.Name)
 	}
 
-	config := &Config{
-		Providers: providers,
-
-		AppName: "OIDC Proxy",
-
-		CallbackURL:          callbackURL,
-		PostLogoutRediretURI: postLogoutURL,
-
-		LoginPath:       "/login",
-		LogoutPath:      "/logout",
-		DebugPath:       "/debug",
-		RefreshPath:     "/refresh",
-		SessionInfoPath: "/info",
-
-		TemplateDir:     templateDir,
-		TemplateDevMode: templateDevMode,
-
-		HashKey:    []byte(cookieHashKey),
-		EncryptKey: []byte(cookieEncKey),
-	}
+	config.HashKey = []byte(cookieHashKey)
+	config.EncryptKey = []byte(cookieEncKey)
+	config.Providers = providers
 
 	var inner http.Handler
 	if upstream != "" {

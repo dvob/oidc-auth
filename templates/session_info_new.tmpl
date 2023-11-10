@@ -9,8 +9,8 @@
   <body>
     <main>
       <h1>Session Info</h1>
-      {{ if . }}
-      {{ if .Valid }}
+      {{ if .Session }}
+      {{ if .Session.Valid }}
         <p><span>Expiry: </span><time datetime="{{ .Session.Expiry | timeFmt }}">{{ .Session.Expiry }}</time></p>
         <p><span>Provider: </span>{{ .Provider }}</p>
         <p><span>Access Token Available: </span>{{ .Session.HasAccessToken }}</p>
@@ -28,9 +28,9 @@
         {{ end }}
       {{ else }}
       <p>
-	  <span>Your session expired at </span><time datetime="{{ .Expiry | timeFmt }}">{{ .Expiry }}</time>.
+	  <span>Your session expired at </span><time datetime="{{ .Session.Expiry | timeFmt }}">{{ .Session.Expiry }}</time>.
       </p>
-        {{ if .HasRefreshToken }}
+        {{ if .Session.HasRefreshToken }}
         <p>Your session can potentially be reactived using the existing refresh token</p>
         {{ end }}
       {{ end }}
@@ -41,18 +41,18 @@
       </p>
       {{ end }}
 
-      {{ if . }}
-      <form method="GET" action="/logout">
+      {{ if .Session }}
+      <form method="GET" action="{{ .Path.Logout }}">
         <button type="submit">Logout</button>
       </form>
       {{ end }}
-      {{ if not .Valid }}
-      <form method="GET" action="/login">
+      {{ if not .Session.Valid }}
+      <form method="GET" action="{{ .Path.Login }}">
         <button type="submit">Login</button>
       </form>
       {{ end }}
-      {{ if and . .HasRefreshToken }}
-      <form method="GET" action="/refresh">
+      {{ if and . .Session.HasRefreshToken }}
+      <form method="GET" action="{{ .Path.Refresh }}">
         <button type="submit">Refresh</button>
       </form>
       {{ end }}

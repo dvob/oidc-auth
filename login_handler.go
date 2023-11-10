@@ -6,16 +6,16 @@ import (
 	"net/url"
 )
 
-func NewDefaultLoginHandler(sm *sessionManager, appName string, tm *templateManager) http.Handler {
-	providerSelectionHandler := ProviderSelectionHandler(appName, sm.providerSet.List(), tm)
-	return LoginHandler(sm, providerSelectionHandler)
-}
-
+// LoginHandler returns a handler which sets a state and then redirects the
+// request to the authorization endpoint of the provider. If multiple providers
+// are configured the provider is selected via the query paramter
+// provider=<providerID>.  If multiple providers are configured
+// providerSelectionHandler can be used to render a provider selection dialog.
 func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerID := r.URL.Query().Get("provider")
 
-		// if provider is not set and there is only one configured we use that one
+		// If provider is not set and there is only one configured we use that one
 		providers := sm.providerSet.List()
 		if len(providers) == 1 && providerID == "" {
 			providerID = providers[0].ID()
@@ -72,32 +72,34 @@ func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler) htt
 	})
 }
 
+// ProviderSelectionHandler returns a handler which shows a provider selection
+// dialog.
+// TODO: public?
 func ProviderSelectionHandler(appName string, providers []*Provider, tm *templateManager) http.Handler {
+	type LoginProviderData struct {
+		Name string
+		Href string
+	}
+
+	loginProviderData := struct {
+		Name      string
+		Providers []LoginProviderData
+	}{
+		Name: appName,
+	}
+
+	for _, provider := range providers {
+		parameters := url.Values{}
+		parameters.Add("provider", provider.ID())
+
+		loginProviderData.Providers = append(loginProviderData.Providers, LoginProviderData{
+			Name: provider.config.Name,
+			Href: "?" + parameters.Encode(),
+		})
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Cache-Control", "no-cache")
-
-		type LoginProviderData struct {
-			Name string
-			Href string
-		}
-
-		loginProviderData := struct {
-			Name      string
-			Providers []LoginProviderData
-		}{
-			Name: appName,
-		}
-
-		for _, provider := range providers {
-			parameters := url.Values{}
-			parameters.Add("provider", provider.ID())
-
-			loginProviderData.Providers = append(loginProviderData.Providers, LoginProviderData{
-				Name: provider.config.Name,
-				Href: "?" + parameters.Encode(),
-			})
-		}
-
 		tm.servePage(w, "login_provider_selection", loginProviderData)
 	})
 }

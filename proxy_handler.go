@@ -12,68 +12,15 @@ import (
 	"time"
 )
 
-type Config struct {
-	// OAuth2 / OIDC
-	Providers []ProviderConfig
-
-	// CallbackURL is the url under which the callback path is reachable
-	CallbackURL string
-
-	// PostLogoutRedirectURI is the URL where you get redirected after an
-	// RP initiated logut
-	PostLogoutRediretURI string
-
-	// LoginPath initiates the login flow
-	LoginPath string
-
-	// CallbackPath handle the oauth2 callback. It defaults to the path of
-	// the CallbackURL if not specified.
-	CallbackPath string
-
-	// SessionInfoPath
-	SessionInfoPath string
-
-	// RefreshPath performs an explicit refresh
-	RefreshPath string
-
-	// LogoutPath deletes cookie, revokes token and redirect to IDPs logout
-	// URL if available
-	LogoutPath string
-
-	// DebugPath shows info about the current session
-	DebugPath string
-
-	// secure cookie
-	HashKey    []byte
-	EncryptKey []byte
-
-	// Used in templates
-	AppName string
-
-	TemplateDir     string
-	TemplateDevMode bool
-}
-
 func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, error) {
-	templateManager, err := newTemplateManager(config.TemplateDir, config.TemplateDevMode)
+	err := config.PrepareAndValidate()
 	if err != nil {
 		return nil, err
 	}
 
-	// validate and prepare config
-	if config.CallbackURL == "" {
-		// TODO: default to current host /callback path
-		return nil, fmt.Errorf("callback url not set")
-	}
-	callbackURL, err := url.Parse(config.CallbackURL)
+	templateManager, err := NewTemplateManager(config.TemplateDir, config.TemplateDevMode)
 	if err != nil {
 		return nil, err
-	}
-
-	// derive callbackPath from callbackURL if not explicitly set
-	callbackPath := config.CallbackPath
-	if callbackPath == "" {
-		callbackPath = callbackURL.Path
 	}
 
 	// Setup Cookiehandler
@@ -108,7 +55,7 @@ func NewAuthenticator(ctx context.Context, config *Config) (*Authenticator, erro
 	return &Authenticator{
 		appName:         config.AppName,
 		loginPath:       config.LoginPath,
-		callbackPath:    callbackPath,
+		callbackPath:    config.CallbackPath,
 		sessionInfoPath: config.SessionInfoPath,
 		refreshPath:     config.RefreshPath,
 		logoutPath:      config.LogoutPath,

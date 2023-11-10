@@ -24,7 +24,7 @@ type templateManager struct {
 	mu      *sync.Mutex
 }
 
-func newTemplateManager(directory string, devMode bool) (*templateManager, error) {
+func NewTemplateManager(directory string, devMode bool) (*templateManager, error) {
 	var templates map[string]*template.Template
 
 	builtInTemplates, err := fs.Sub(templateFS, "templates")

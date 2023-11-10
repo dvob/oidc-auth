@@ -1,7 +1,6 @@
 package oidcproxy
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -78,28 +77,18 @@ func AuthenticateHandler(sm *sessionManager, loginEndpoint string, next http.Han
 	})
 }
 
-func RefreshHandler(sm *sessionManager) http.Handler {
-	redirectToInfo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/info", http.StatusSeeOther)
-	})
+func RefreshHandler(sm *sessionManager, postRefreshHandler http.Handler, errorHandler HTTPErrorHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// TODO: return proper json response on accept json
-		// TODO: on HTML set flash message
 		session, _ := sm.GetSession(w, r)
 		if session == nil {
-			http.Error(w, "no session", http.StatusUnauthorized)
+			errorHandler(w, r, http.StatusUnauthorized, nil)
 			return
 		}
 
 		newSession, err := session.Provider.Refresh(r.Context(), session.Session)
 		if err != nil {
 			slog.Info("session initialization after token refresh failed", "err", err)
-
-			message := "token refresh failed"
-			if userError, ok := err.(UserError); ok {
-				message += ": " + userError.UserError()
-			}
-			http.Error(w, message, http.StatusInternalServerError)
+			errorHandler(w, r, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -107,11 +96,13 @@ func RefreshHandler(sm *sessionManager) http.Handler {
 
 		err = sm.SetSession(w, r, newSession)
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			errorHandler(w, r, http.StatusInternalServerError, err)
 			return
 		}
 
-		redirectToInfo(w, r)
+		session.Session = newSession
+		r = r.WithContext(ContextWithSession(r.Context(), session))
+		postRefreshHandler.ServeHTTP(w, r)
 	})
 }
 
@@ -119,20 +110,15 @@ func RefreshHandler(sm *sessionManager) http.Handler {
 // the provider) and redirects to the end_session_uri of the provider (if
 // supported by the provider).
 func LogoutHandler(sm *sessionManager, postLogoutHandler http.Handler) http.Handler {
-	if postLogoutHandler == nil {
-		postLogoutHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintln(w, "logged out")
-		})
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// remove session (delete cookie)
+		sm.RemoveSession(w, r)
+
 		session, _ := sm.GetSession(w, r)
 		if session == nil {
 			postLogoutHandler.ServeHTTP(w, r)
 			return
 		}
-
-		// remove session (delete cookie)
-		sm.RemoveSession(w, r)
 
 		// revoke tokens
 		if session.HasRefreshToken() {

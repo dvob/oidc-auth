@@ -10,7 +10,7 @@ type HTTPErrorHandler func(w http.ResponseWriter, r *http.Request, httpCode int,
 
 type PostCallbackHandler func(w http.ResponseWriter, r *http.Request, s *SessionContext)
 
-func defaultPostCallbackHandler(sm *sessionManager, errorHandler HTTPErrorHandler) func(w http.ResponseWriter, r *http.Request, s *SessionContext) {
+func defaultPostCallbackHandler(sm *sessionManager, errorHandler HTTPErrorHandler, infoEndpoint string) func(w http.ResponseWriter, r *http.Request, s *SessionContext) {
 	return func(w http.ResponseWriter, r *http.Request, s *SessionContext) {
 		// persist new session
 		err := sm.SetSession(w, r, s.Session)
@@ -23,7 +23,7 @@ func defaultPostCallbackHandler(sm *sessionManager, errorHandler HTTPErrorHandle
 
 		originURI := loginState.URI
 		if originURI == "" {
-			http.Redirect(w, r, "/info", http.StatusSeeOther)
+			http.Redirect(w, r, infoEndpoint, http.StatusSeeOther)
 			return
 		}
 		http.Redirect(w, r, loginState.URI, http.StatusSeeOther)
@@ -31,24 +31,16 @@ func defaultPostCallbackHandler(sm *sessionManager, errorHandler HTTPErrorHandle
 }
 
 func defaultErrorHandler(w http.ResponseWriter, r *http.Request, httpCode int, err error) {
+	message := http.StatusText(httpCode)
 	if err != nil {
-		message := http.StatusText(httpCode)
 		if userError, ok := err.(UserError); ok {
-			message = "login failed: " + userError.UserError()
+			message = userError.UserError()
 		}
-		http.Error(w, message, httpCode)
 	}
+	http.Error(w, message, httpCode)
 }
 
 func CallbackHandler(sm *sessionManager, postCallbackHandler PostCallbackHandler, errorHandler HTTPErrorHandler) http.Handler {
-	if errorHandler == nil {
-		errorHandler = defaultErrorHandler
-	}
-
-	if postCallbackHandler == nil {
-		postCallbackHandler = defaultPostCallbackHandler(sm, errorHandler)
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		loginState := sm.GetLoginState(w, r)
 		if loginState == nil {

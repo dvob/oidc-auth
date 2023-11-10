@@ -7,9 +7,39 @@ import (
 	"time"
 )
 
-func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager) http.Handler {
+type PathSet struct {
+	// Login is the path to the login handler
+	Login string
+
+	// Logout is the path to the logout handler
+	Logout string
+
+	// Refresh is the path to the refresh handler
+	Refresh string
+}
+
+type SessionInfoTemplateData struct {
+	Session  *Session
+	Provider *Provider
+	Path     PathSet
+}
+
+func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager, pathSet PathSet) http.Handler {
 	renderSessionHandler := func(w http.ResponseWriter, r *http.Request, s *SessionContext) {
-		tm.servePage(w, "session_info_new", s)
+		var (
+			session  *Session
+			provider *Provider
+		)
+		if s != nil {
+			session = s.Session
+			provider = s.Provider
+		}
+		data := &SessionInfoTemplateData{
+			Session:  session,
+			Provider: provider,
+			Path:     pathSet,
+		}
+		tm.servePage(w, "session_info_new", data)
 
 	}
 	return SessionInfoHandler(sm, renderSessionHandler)
