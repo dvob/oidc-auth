@@ -10,7 +10,7 @@ func NewMainHandler(config *Config, next http.Handler) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.NewAuthHandler(next)
+	return a.NewAuthHandler(next), nil
 }
 
 type App struct {
@@ -63,7 +63,7 @@ func NewApp(c *Config) (*App, error) {
 	}, nil
 }
 
-func (a *App) NewAuthHandler(next http.Handler) (http.Handler, error) {
+func (a *App) NewAuthHandler(next http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	// login
@@ -108,5 +108,5 @@ func (a *App) NewAuthHandler(next http.Handler) (http.Handler, error) {
 
 	// TODO: remove
 	mux.Handle("/debug", DebugHandler(a.SessionManager, a.Providers))
-	return mux, nil
+	return mux
 }
