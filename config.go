@@ -58,8 +58,9 @@ type Config struct {
 	DebugPath string
 
 	// secure cookie
-	HashKey    []byte
-	EncryptKey []byte
+	HashKey      []byte
+	EncryptKey   []byte
+	CookieConfig CookieOptions
 
 	// Used in templates
 	AppName string
@@ -78,6 +79,7 @@ func NewDefaultConfig() *Config {
 		LogoutPath:      "/logout",
 		AppName:         "OIDC Proxy",
 		TemplateDevMode: false,
+		CookieConfig:    NewDefaultCookieOptions(),
 	}
 }
 

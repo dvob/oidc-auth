@@ -2,17 +2,44 @@ package oidcproxy
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gorilla/securecookie"
 )
 
-type CookieHandler struct {
-	securecookie  *securecookie.SecureCookie
-	cookieOptions *http.Cookie
+type CookieOptions struct {
+	Path     string
+	Secure   bool
+	HttpOnly bool
+	Domain   string
+	SameSite http.SameSite
+	Duration time.Duration
 }
 
-func NewDefaultCookieOptions() *http.Cookie {
+func (co *CookieOptions) NewCookie(name, value string) *http.Cookie {
+	var expires time.Time
+	if co.Duration != 0 {
+		expires = time.Now().Add(co.Duration)
+	}
 	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     co.Path,
+		Domain:   co.Domain,
+		Expires:  expires,
+		Secure:   co.Secure,
+		HttpOnly: co.HttpOnly,
+		SameSite: co.SameSite,
+	}
+}
+
+type CookieHandler struct {
+	securecookie  *securecookie.SecureCookie
+	cookieOptions CookieOptions
+}
+
+func NewDefaultCookieOptions() CookieOptions {
+	return CookieOptions{
 		Path:     "/",
 		Secure:   true,
 		HttpOnly: true,
@@ -24,10 +51,7 @@ func NewCookieHandler(hashKey, encryptKey []byte) *CookieHandler {
 	return NewCookieHandlerWithOptions(hashKey, encryptKey, NewDefaultCookieOptions())
 }
 
-func NewCookieHandlerWithOptions(hashKey []byte, encryptKey []byte, options *http.Cookie) *CookieHandler {
-	if options == nil {
-		options = NewDefaultCookieOptions()
-	}
+func NewCookieHandlerWithOptions(hashKey []byte, encryptKey []byte, options CookieOptions) *CookieHandler {
 	sc := securecookie.New(hashKey, encryptKey)
 	sc.MaxLength(0)
 	// sc.SetSerializer(newCompressSerializer())
@@ -43,11 +67,7 @@ func (c *CookieHandler) Set(w http.ResponseWriter, r *http.Request, name string,
 		return err
 	}
 
-	newCookie := *c.cookieOptions
-	cookie := &newCookie
-	cookie.Name = name
-	cookie.Value = encodedValue
-
+	cookie := c.cookieOptions.NewCookie(name, encodedValue)
 	for _, opt := range opts {
 		opt(cookie)
 	}
@@ -72,9 +92,9 @@ func (c *CookieHandler) Delete(w http.ResponseWriter, r *http.Request, name stri
 	}
 
 	for _, cookie := range cookies {
-		deletionCookie := *c.cookieOptions
-		deletionCookie.Name = cookie.Name
+		deletionCookie := c.cookieOptions.NewCookie(cookie.Name, "")
+		deletionCookie.Expires = time.Time{}
 		deletionCookie.MaxAge = -1
-		http.SetCookie(w, &deletionCookie)
+		http.SetCookie(w, deletionCookie)
 	}
 }

@@ -50,7 +50,7 @@ func NewApp(c *Config) (*App, error) {
 		return nil, err
 	}
 
-	sm, err := NewSessionManager(c.HashKey, c.EncryptKey, providerSet)
+	sm, err := NewSessionManager(c.HashKey, c.EncryptKey, providerSet, c.CookieConfig)
 	if err != nil {
 		return nil, err
 	}

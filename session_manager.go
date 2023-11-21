@@ -16,7 +16,7 @@ type sessionManager struct {
 	logger               *slog.Logger
 }
 
-func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet) (*sessionManager, error) {
+func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet, cookieOptions CookieOptions) (*sessionManager, error) {
 	if !(len(hashKey) == 32 || len(hashKey) == 64) {
 		return nil, fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
 	}
@@ -24,7 +24,7 @@ func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet) 
 		return nil, fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 
-	cookieHandler := NewCookieHandler(hashKey, encryptionKey)
+	cookieHandler := NewCookieHandlerWithOptions(hashKey, encryptionKey, cookieOptions)
 	return &sessionManager{
 		cookieHandler:        cookieHandler,
 		loginStateCookieName: "oprox_state",
