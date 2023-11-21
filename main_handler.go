@@ -94,6 +94,7 @@ func (a *App) NewAuthHandler(next http.Handler) http.Handler {
 		},
 	))
 
+	// refresh
 	mux.Handle(a.Config.RefreshPath, RefreshHandler(a.SessionManager, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, a.Config.ExternalSessionInfoPath, http.StatusSeeOther)
 	}), defaultErrorHandler))
@@ -106,7 +107,5 @@ func (a *App) NewAuthHandler(next http.Handler) http.Handler {
 	// root
 	mux.Handle("/", AuthenticateHandler(a.SessionManager, a.Config.ExternalLoginPath, next))
 
-	// TODO: remove
-	mux.Handle("/debug", DebugHandler(a.SessionManager, a.Providers))
 	return mux
 }
