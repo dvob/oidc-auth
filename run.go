@@ -46,6 +46,7 @@ func Run() error {
 	flag.StringVar(&config.PostLogoutRediretURI, "post-logout-url", config.PostLogoutRediretURI, "post logout redirect uri")
 	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
+	flag.BoolVar(&config.CookieConfig.Secure, "cookie-secure", config.CookieConfig.Secure, "set cookie secure setting")
 
 	flag.StringVar(&config.TemplateDir, "template-dir", config.TemplateDir, "template dir to overwrite existing templates")
 	flag.BoolVar(&config.TemplateDevMode, "template-dev-mode", config.TemplateDevMode, "reload templates on each request")
