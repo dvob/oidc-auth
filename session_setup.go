@@ -1,8 +1,9 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -11,12 +12,18 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// SessionSetupFunc is used to setup a new session. This usually happens during
-// the initial login on the code exchange or on a token refresh.
+// SessionSetupFunc is used to setup a new session. This happens always after a
+// IDP issues a new set of tokens. This is either on the initial login where we
+// get a set of tokens using an authorization code or if we obtain a new set of
+// tokens using a refresh_token.
 // It turns the returend tokens into a session. This allows to customize the
-// session setup. For example obtaining additional information like groups from
-// other sources (e.g. userinfo endpoint) or setting a custom expiration time.
-// Be aware that on a refresh not every provider does return a new id_token.
+// session setup based on the tokens. For example obtaining additional
+// information like groups from other sources (e.g. userinfo endpoint) or
+// setting a custom expiration time. Be aware that on a refresh not every
+// provider does return a new id_token. If you return an error no new session
+// will be established.
+// Consider returning ServerErr to control what HTTP status code is retuned and
+// what error is shown to the user.
 type SessionSetupFunc func(ctx context.Context, p *Provider, t *TokenResponse, s *Session) error
 
 type TokenResponse struct {
@@ -40,9 +47,14 @@ var defaultSessionSetupFunc SessionSetupFunc = func(ctx context.Context, p *Prov
 		IDToken: t.RawIDToken,
 	}
 
+	// Set expiry of the session according to the expires_in field in the
+	// token response. See https://datatracker.ietf.org/doc/html/rfc6749#section-4.2.2
+	// This field is not REQUIRED so we set a default if it is not available.
 	if t.Token.Expiry.IsZero() {
+
 		s.Expiry = time.Now().Add(defaultSessionDuration)
 	} else {
+		// use the expires_in from the token response
 		s.Expiry = t.Token.Expiry
 	}
 
@@ -50,6 +62,9 @@ var defaultSessionSetupFunc SessionSetupFunc = func(ctx context.Context, p *Prov
 		return nil
 	}
 
+	// If an id_token is available try to obtain a user id and username
+	// from the id_token. To use your own logic implement your own
+	// SessionSetupFunc to overwrite theses values.
 	claims := struct {
 		EMail             string `json:"email"`
 		PreferredUsername string `json:"preferred_username"`
@@ -131,8 +146,7 @@ func RequireIDTokenGroup(groups ...string) SessionSetupFunc {
 				return nil
 			}
 		}
-		message := fmt.Sprintf("You are not authorized. You need to be a member of one of theses groups: %s", strings.Join(groups, ", "))
-		return NewUserError(nil, 401, message)
+		return ErrDirect(http.StatusUnauthorized, fmt.Errorf("You are not authorized. You need to be a member of one of theses groups: %s", strings.Join(groups, ", ")))
 	}
 }
 
@@ -149,6 +163,10 @@ func NewSessionClaimCheckFunc(claimCheckFunc ClaimCheckFunc) SessionSetupFunc {
 		if err != nil {
 			return err
 		}
-		return claimCheckFunc(claims)
+		err = claimCheckFunc(claims)
+		if err != nil {
+			ErrDirect(http.StatusUnauthorized, err)
+		}
+		return nil
 	}
 }

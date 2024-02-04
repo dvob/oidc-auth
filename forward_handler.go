@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"crypto/tls"
@@ -7,6 +7,9 @@ import (
 	"net/url"
 )
 
+// newForwardHandler returns a handler which forwards all requests to upstream
+// and adds to every request the access token of the session as Authorization
+// header.
 func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (http.Handler, error) {
 	targetURL, err := url.Parse(upstream)
 	if err != nil {
@@ -16,7 +19,6 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	rewriteFunc := func(pr *httputil.ProxyRequest) {
 		pr.SetURL(targetURL)
 		pr.SetXForwarded()
-		// pr.Out.Host = pr.In.Host
 		if modifyRequest != nil {
 			modifyRequest(pr.Out)
 		}
@@ -26,8 +28,6 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	http11Transport := http.DefaultTransport.(*http.Transport).Clone()
 	http11Transport.ForceAttemptHTTP2 = false
 	http11Transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-	http11Transport.TLSClientConfig = &tls.Config{}
-	http11Transport.TLSClientConfig.InsecureSkipVerify = true
 
 	http11Upstream := &httputil.ReverseProxy{
 		Rewrite:   rewriteFunc,
@@ -37,9 +37,6 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	// defaultUpstream := httputil.NewSingleHostReverseProxy(targetURL)
 
 	defaultTransport := http.DefaultTransport.(*http.Transport).Clone()
-	defaultTransport.TLSClientConfig = &tls.Config{
-		InsecureSkipVerify: true,
-	}
 	defaultUpstream := &httputil.ReverseProxy{
 		Rewrite:   rewriteFunc,
 		Transport: defaultTransport,

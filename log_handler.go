@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"log/slog"

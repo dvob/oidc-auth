@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"net/http"
@@ -33,13 +33,13 @@ func (co *CookieOptions) NewCookie(name, value string) *http.Cookie {
 	}
 }
 
-type CookieHandler struct {
+type CookieManager struct {
 	securecookie  *securecookie.SecureCookie
 	cookieOptions CookieOptions
 }
 
-func NewDefaultCookieOptions() CookieOptions {
-	return CookieOptions{
+func NewDefaultCookieOptions() *CookieOptions {
+	return &CookieOptions{
 		Path:     "/",
 		Secure:   true,
 		HttpOnly: true,
@@ -47,21 +47,25 @@ func NewDefaultCookieOptions() CookieOptions {
 	}
 }
 
-func NewCookieHandler(hashKey, encryptKey []byte) *CookieHandler {
+func NewCookieHandler(hashKey, encryptKey []byte) *CookieManager {
 	return NewCookieHandlerWithOptions(hashKey, encryptKey, NewDefaultCookieOptions())
 }
 
-func NewCookieHandlerWithOptions(hashKey []byte, encryptKey []byte, options CookieOptions) *CookieHandler {
+func NewCookieHandlerWithOptions(hashKey []byte, encryptKey []byte, options *CookieOptions) *CookieManager {
 	sc := securecookie.New(hashKey, encryptKey)
 	sc.MaxLength(0)
-	// sc.SetSerializer(newCompressSerializer())
-	return &CookieHandler{
+
+	if options == nil {
+		options = NewDefaultCookieOptions()
+	}
+
+	return &CookieManager{
 		securecookie:  sc,
-		cookieOptions: options,
+		cookieOptions: *options,
 	}
 }
 
-func (c *CookieHandler) Set(w http.ResponseWriter, r *http.Request, name string, value any, opts ...func(*http.Cookie)) error {
+func (c *CookieManager) Set(w http.ResponseWriter, r *http.Request, name string, value any, opts ...func(*http.Cookie)) error {
 	encodedValue, err := c.securecookie.Encode(name, value)
 	if err != nil {
 		return err
@@ -75,7 +79,7 @@ func (c *CookieHandler) Set(w http.ResponseWriter, r *http.Request, name string,
 	return nil
 }
 
-func (c *CookieHandler) Get(r *http.Request, name string, dstValue any) (bool, error) {
+func (c *CookieManager) Get(r *http.Request, name string, dstValue any) (bool, error) {
 	cookies := getCookies(r, name)
 	if len(cookies) == 0 {
 		return false, nil
@@ -85,7 +89,7 @@ func (c *CookieHandler) Get(r *http.Request, name string, dstValue any) (bool, e
 	return true, c.securecookie.Decode(name, encodedValue, dstValue)
 }
 
-func (c *CookieHandler) Delete(w http.ResponseWriter, r *http.Request, name string) {
+func (c *CookieManager) Delete(w http.ResponseWriter, r *http.Request, name string) {
 	cookies := getCookies(r, name)
 	if len(cookies) == 0 {
 		return

@@ -1,7 +1,8 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	pathpkg "path"
 )
@@ -39,8 +40,9 @@ type Config struct {
 
 	// The external pathes are the paths under which the endpoint is
 	// reachable from externally. If not set this defaults to the internal
-	// path. These variables are only required if between the client and
-	// this component the path gets rewritten.
+	// path (same field without External prefix). These variables are only
+	// required if between the client and this component the path gets
+	// rewritten.
 	// For example if you have an entry proxy (ingress) which routes
 	// requests from entry.com/myapp/auth/info to myapp.com/auth/info you
 	// have to configure a ExternalBasePath of /myapp.
@@ -49,35 +51,32 @@ type Config struct {
 	ExternalSessionInfoPath string
 	ExternalRefreshPath     string
 	ExternalLogoutPath      string
-	// TODO: maybe only provide ExternalBasePath?
-
-	// DebugPath shows info about the current session
-	//
-	// Deprecated: will remove
-	// TODO:
-	DebugPath string
 
 	// secure cookie
-	HashKey      []byte
-	EncryptKey   []byte
-	CookieConfig CookieOptions
+	HashKey       []byte
+	EncryptionKey []byte
+	CookieConfig  *CookieOptions
 
-	// Used in templates
+	// AppName is used in templates. It is shown on the provider selection
+	// to indicate where you are login into.
 	AppName string
 
 	TemplateDir     string
 	TemplateDevMode bool
+
+	// GetRequestID is used in the default error handler if set. It returns
+	// the request id along with the error message.
+	GetRequestID func(r *http.Request) string
 }
 
 func NewDefaultConfig() *Config {
 	return &Config{
-		BasePath:  "/auth",
-		LoginPath: "/login",
-		//CallbackPath:    "/callback",
+		AppName:         "OIDC Proxy",
+		BasePath:        "/auth",
+		LoginPath:       "/login",
 		SessionInfoPath: "/info",
 		RefreshPath:     "/refresh",
 		LogoutPath:      "/logout",
-		AppName:         "OIDC Proxy",
 		TemplateDevMode: false,
 		CookieConfig:    NewDefaultCookieOptions(),
 	}
@@ -109,6 +108,14 @@ func (c *Config) PrepareAndValidate() error {
 		c.CallbackPath = callbackURL.Path
 	} else {
 		c.CallbackPath = c.BasePath + c.CallbackPath
+	}
+
+	// validate cookie keys
+	if !(len(c.HashKey) == 32 || len(c.HashKey) == 64) {
+		return fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
+	}
+	if !(len(c.EncryptionKey) == 0 || len(c.EncryptionKey) == 32 || len(c.EncryptionKey) == 64) {
+		return fmt.Errorf("encryption kes is missing or has invalid key length. a length of 32 or 64 is required")
 	}
 
 	// Login

@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"encoding/base64"
@@ -76,11 +76,6 @@ type jwt struct {
 	Expiry   time.Time      `json:"expiry,omitempty"`
 	IssuedAt time.Time      `json:"issued_at,omitempty"`
 	Error    string         `json:"error,omitempty"`
-}
-
-func readBearer(r *http.Request) string {
-	_, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-	return token
 }
 
 func readJWT(token string) *jwt {

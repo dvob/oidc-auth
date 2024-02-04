@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,46 +22,80 @@ import (
 var ErrNotSupported = errors.New("not supported")
 
 type ProviderConfig struct {
-	ID                     string           `json:"id,omitempty"`
-	Name                   string           `json:"name"`
-	IssuerURL              string           `json:"issuer_url"`
-	ClientID               string           `json:"client_id"`
-	ClientSecret           string           `json:"client_secret"`
-	Scopes                 []string         `json:"scopes"`
-	AuthorizationParameter url.Values       `json:"authorization_parameters"`
-	TokenParameters        url.Values       `json:"token_parameters"`
-	CallbackURL            string           `json:"callback_url"`
-	PostLogoutRedirectURI  string           `json:"post_logout_redirect_uri"`
-	SetupSessionFunc       SessionSetupFunc `json:"-"`
+	// ID (optional) for the provider. This is espacially used in multi provider
+	// scenarios where the provider ID is stored in the session to figure
+	// out for each session to which provider it belongs.
+	// If no ID is provided it is generated based on the configuration.
+	ID string `json:"id,omitempty"`
+
+	// Name (optional) is a descriptive name for the provider. It is used in multi
+	// provider scenarios during the login process on the provider
+	// selection screen.
+	Name string `json:"name"`
+
+	// IssuerURL is the URL for the OpenID discovery. For providers which
+	// do not support OpenID discovery you can configure
+	// AuthorizationEndpoint and TokenEndpoint instead.
+	IssuerURL string `json:"issuer_url"`
+
+	// ClientID
+	ClientID string `json:"client_id"`
+
+	// ClientSecret (optional) if not set the provider acts as a public
+	// client.
+	ClientSecret string `json:"client_secret"`
+
+	// Scopes (optional) to use for the authorization.
+	Scopes []string `json:"scopes"`
+
+	// AuthorizationParameter (optional) are additional query parameters
+	// for the authorization endpoint (e.g. resource).
+	AuthorizationParameter url.Values `json:"authorization_parameters"`
+
+	// TokenParameters (optional) are additional query parameters for the
+	// token endpoint.
+	TokenParameters url.Values `json:"token_parameters"`
+
+	// CallbackURL used as redirect_uri
+	CallbackURL string `json:"callback_url"`
+
+	// PostLogoutRedirectURI (optional) is used during logout for the call
+	// to the EndSessionEndpoint.
+	PostLogoutRedirectURI string `json:"post_logout_redirect_uri"`
+
+	// SetupSessionFunc allows to customize the Session based on the tokens
+	// returned in the TokenResponse. For example exctract values from the
+	// id_tokens of fetch additional information from a third-party servie
+	// using the access_token. If SetupSessionFunc is nil only the defaultSessionSetupFunc is used
+	SetupSessionFunc SessionSetupFunc `json:"-"`
+
+	// Endpoints are usually discovered using OpenID discovery. If set
+	// manual you can configure endpoints which can't be discovered or
+	// overwrite endpoints from the discovery.
 	Endpoints
 }
 
-func (pc *ProviderConfig) Clone() ProviderConfig {
-	clone := *pc
-
-	// Scopes
-	clone.Scopes = make([]string, len(pc.Scopes))
-	copy(clone.Scopes, pc.Scopes)
-
-	// AuthorizationParameter
-	clone.AuthorizationParameter = url.Values(http.Header(pc.AuthorizationParameter).Clone())
-
-	// TokenParameters
-	clone.TokenParameters = url.Values(http.Header(pc.TokenParameters).Clone())
-
-	return clone
-}
-
 type Endpoints struct {
+	// AuthorizationEndpoint https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
+	// TokenEndpoint https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata
+	TokenEndpoint string `json:"token_endpoint"`
+	// UserinfoEndpoint https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata
+	UserinfoEndpoint string `json:"userinfo_endpoint"`
+
+	// EndSessionEndpoint https://openid.net/specs/openid-connect-rpinitiated-1_0.html#OPMetadata
+	EndSessionEndpoint string `json:"end_session_endpoint"`
+
+	// IntrospectionEndpoint (discovery has no specification)
+	// See https://datatracker.ietf.org/doc/html/rfc7662
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
-	UserinfoEndpoint      string `json:"userinfo_endpoint"`
-	EndSessionEndpoint    string `json:"end_session_endpoint"`
-	RevocationEndpoint    string `json:"revocation_endpoint"`
+
+	// RevocationEndpoint (discovery has no specification)
+	// See https://datatracker.ietf.org/doc/html/rfc7009
+	RevocationEndpoint string `json:"revocation_endpoint"`
 }
 
-// Merge sets e to e2 if e is not set
+// Merge merges e2 into e
 func (e *Endpoints) Merge(e2 *Endpoints) {
 	if e.AuthorizationEndpoint == "" {
 		e.AuthorizationEndpoint = e2.AuthorizationEndpoint
@@ -82,10 +117,26 @@ func (e *Endpoints) Merge(e2 *Endpoints) {
 	}
 }
 
+func (pc *ProviderConfig) clone() ProviderConfig {
+	clone := *pc
+
+	// Scopes
+	clone.Scopes = make([]string, len(pc.Scopes))
+	copy(clone.Scopes, pc.Scopes)
+
+	// AuthorizationParameter
+	clone.AuthorizationParameter = url.Values(http.Header(pc.AuthorizationParameter).Clone())
+
+	// TokenParameters
+	clone.TokenParameters = url.Values(http.Header(pc.TokenParameters).Clone())
+
+	return clone
+}
+
 func NewProvider(ctx context.Context, config ProviderConfig) (*Provider, error) {
 	var err error
 
-	config = config.Clone()
+	config = config.clone()
 
 	if config.ClientID == "" {
 		return nil, fmt.Errorf("client id missing in configuration")
@@ -114,25 +165,26 @@ func NewProvider(ctx context.Context, config ProviderConfig) (*Provider, error) 
 		oauth2TokenOpts:    urlValuesIntoOpts(config.TokenParameters),
 
 		oidcConfig: &oidc.Config{
-			ClientID: config.ClientID,
+			ClientID:             config.ClientID,
+			SupportedSigningAlgs: []string{"RS256", "ES384"},
 		},
 		sessionSetupFunc: sessionSetupFunc,
 	}
 
-	// TODO: add option do defer
 	if config.IssuerURL != "" {
 		provider.oidcProvider, err = oidc.NewProvider(ctx, config.IssuerURL)
 		if err != nil {
 			return nil, err
 		}
+
 		endpoints := &Endpoints{}
 		err := provider.oidcProvider.Claims(endpoints)
 		if err != nil {
 			return nil, err
 		}
 
-		// apply explicitly set settings which take precedence over the
-		// discoverd endpoints
+		// apply discoverd endpoints. explicitly set endpoints take
+		// precedence over the discoverd endpoints.
 		provider.config.Endpoints.Merge(endpoints)
 	}
 
@@ -191,12 +243,12 @@ func (p *Provider) String() string {
 }
 
 func (p *Provider) Config() ProviderConfig {
-	return p.config.Clone()
+	return p.config.clone()
 }
 
 // AuthorizationEndpoint returns the authorization endpoint where redirect
 // clients to initiate a login.
-func (p *Provider) AuthorizationEndpoint(ctx context.Context, state string) (string, error) {
+func (p *Provider) AuthorizationEndpoint(_ context.Context, state string) (string, error) {
 	// NOTE: might return error in the future if the provider is setup asynchronously.
 	return p.oauth2Config.AuthCodeURL(state, p.oauth2AuthCodeOpts...), nil
 }
@@ -204,8 +256,8 @@ func (p *Provider) AuthorizationEndpoint(ctx context.Context, state string) (str
 // Exchange performs the Access Token Request using code. See
 // https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3. Based on the
 // returned Access Token Response it returns a session (see SessionSetupFunc).
-func (p *Provider) Exchange(ctx context.Context, code string, opts ...oauth2.AuthCodeOption) (*Session, error) {
-	oauth2Token, err := p.oauth2Config.Exchange(ctx, code, p.oauth2TokenOpts...)
+func (p *Provider) Exchange(ctx context.Context, code string) (*Session, error) {
+	oauth2Token, err := p.oauth2Config.Exchange(ctx, code, p.oauth2AuthCodeOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +338,7 @@ func (p *Provider) Revoke(ctx context.Context, token string) error {
 // EndSessionEndpoint returns the logout URL for the RP initiated logout if the end_session_endpoint is
 // configured or an empty string otherwise.
 // https://openid.net/specs/openid-connect-rpinitiated-1_0.html
-func (p *Provider) EndSessionEndpoint(ctx context.Context, session *Session) (string, error) {
+func (p *Provider) EndSessionEndpoint(_ context.Context, session *Session) (string, error) {
 	if p.config.EndSessionEndpoint == "" {
 		return "", ErrNotSupported
 	}
@@ -327,19 +379,20 @@ func (p *Provider) newSession(ctx context.Context, tr *TokenResponse) (*Session,
 }
 
 func (p *Provider) intoTokenResponse(ctx context.Context, oauth2Token *oauth2.Token) (*TokenResponse, error) {
-	idToken, ok := oauth2Token.Extra("id_token").(string)
-	if !ok {
-		return nil, fmt.Errorf("inavlid type for id_token")
-	}
-
 	tokenResponse := &TokenResponse{
-		Token:      *oauth2Token,
-		RawIDToken: idToken,
+		Token: *oauth2Token,
 	}
 
-	// OAuth2 only
-	if idToken == "" {
+	idToken := oauth2Token.Extra("id_token")
+	if idToken == nil {
+		// request does not contain id_token
 		return tokenResponse, nil
+	}
+
+	var ok bool
+	tokenResponse.RawIDToken, ok = idToken.(string)
+	if !ok {
+		return tokenResponse, fmt.Errorf("id_token is not of type string")
 	}
 
 	if p.oidcProvider == nil {
@@ -355,31 +408,6 @@ func (p *Provider) intoTokenResponse(ctx context.Context, oauth2Token *oauth2.To
 	return tokenResponse, nil
 }
 
-type UserError interface {
-	UserError() string
-}
-
-type userError struct {
-	userErrorMessage string
-	httpCode         int
-	err              error
-}
-
-func (ue *userError) Error() string     { return ue.err.Error() }
-func (ue *userError) UserError() string { return ue.userErrorMessage }
-func (ue *userError) HTTPCode() int     { return ue.httpCode }
-func (ue *userError) Unwrap() error     { return ue.err }
-
-func NewUserError(err error, code int, userErrorMessage string) *userError {
-	if err == nil {
-		err = fmt.Errorf(userErrorMessage)
-	}
-	return &userError{
-		userErrorMessage: userErrorMessage,
-		err:              err,
-	}
-}
-
 type providerSet struct {
 	providerList []*Provider
 	providerMap  map[string]*Provider
@@ -388,9 +416,10 @@ type providerSet struct {
 func NewProviderSet(ctx context.Context, providerConfigs []ProviderConfig, modifier func(pc *ProviderConfig)) ([]*Provider, error) {
 	providerList := []*Provider{}
 	for _, config := range providerConfigs {
-		config := config.Clone()
+		config := config.clone()
 		modifier(&config)
 
+		slog.InfoContext(ctx, "init provider", "issuer_url", config.IssuerURL)
 		provider, err := NewProvider(ctx, config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize provider '%s': %w", config.IssuerURL, err)

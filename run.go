@@ -1,6 +1,7 @@
-package oidcproxy
+package oidcauth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -101,17 +102,17 @@ func Run() error {
 	}
 
 	config.HashKey = []byte(cookieHashKey)
-	config.EncryptKey = []byte(cookieEncKey)
+	config.EncryptionKey = []byte(cookieEncKey)
 	config.Providers = providers
 
-	var inner http.Handler
+	var proxy http.Handler
 	if upstream != "" {
-		inner, err = newForwardHandler(upstream, nil)
+		proxy, err = newForwardHandler(upstream, nil)
 		if err != nil {
 			return err
 		}
 	} else {
-		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			s := SessionFromContext(r.Context())
 			if s.User != nil {
 				fmt.Fprintln(w, "hello "+s.User.Name)
@@ -121,12 +122,14 @@ func Run() error {
 		})
 	}
 
-	authenticated, err := NewMainHandler(config, inner)
+	ctx := context.Background()
+
+	oidcAuth, err := NewAuthenticator(ctx, config)
 	if err != nil {
 		return err
 	}
 
-	//authenticated := authenticator.Handler(inner)
+	authenticated := oidcAuth.FullMiddleware(proxy)
 
 	logger := newLogHandler(authenticated)
 

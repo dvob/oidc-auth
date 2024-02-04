@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"bytes"
@@ -58,7 +58,7 @@ func (t *templateManager) servePage(w http.ResponseWriter, templateName string, 
 		return
 	}
 	w.Header().Add("Content-Type", "text/html")
-	w.Write(buf)
+	_, _ = w.Write(buf)
 }
 
 // renderPage executes the given templateName with page.

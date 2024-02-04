@@ -1,4 +1,4 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"context"
@@ -8,15 +8,18 @@ import (
 	"strings"
 )
 
+// sessionManager handles reading and setting of the encrypted session cookies.
 type sessionManager struct {
-	cookieHandler        *CookieHandler
+	cookieHandler        *CookieManager
 	sessionCookieName    string
 	loginStateCookieName string
 	providerSet          *providerSet
 	logger               *slog.Logger
 }
 
-func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet, cookieOptions CookieOptions) (*sessionManager, error) {
+// NewSessionManager creates a new sessionManager which is responsible to set
+// and get encrypted session cookies.
+func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet, cookieOptions *CookieOptions) (*sessionManager, error) {
 	if !(len(hashKey) == 32 || len(hashKey) == 64) {
 		return nil, fmt.Errorf("hash key is missing or has invalid key length. a length of 32 or 64 is required")
 	}
@@ -34,8 +37,12 @@ func NewSessionManager(hashKey, encryptionKey []byte, providerSet *providerSet, 
 	}, nil
 }
 
+// SessionContext represents a Session and a reference to the Provider which
+// issued the session.
 type SessionContext struct {
 	*Session
+
+	// Provider which issued the session
 	Provider *Provider
 }
 
@@ -102,10 +109,17 @@ func (sm *sessionManager) RemoveCookie(r *http.Request) {
 	}
 }
 
+// LoginState gets set during the login before we redirect a request to the
+// IDPs authorization endpoint.
 type LoginState struct {
+	// ProviderID to identify the provider we want to login with.
 	ProviderID string
-	State      string
-	URI        string
+
+	// State for the OAuth2 code flow
+	State string
+
+	// URI to return to during the callback.
+	URI string
 }
 
 func (sm *sessionManager) GetLoginState(w http.ResponseWriter, r *http.Request) *LoginState {

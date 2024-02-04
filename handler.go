@@ -1,6 +1,7 @@
-package oidcproxy
+package oidcauth
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 )
@@ -35,14 +36,14 @@ func AuthenticateHandler(sm *sessionManager, loginEndpoint string, next http.Han
 			return
 		}
 		originURI := r.URL.RequestURI()
-		sm.SetLoginState(w, r, &LoginState{URI: originURI})
+		_ = sm.SetLoginState(w, r, &LoginState{URI: originURI})
 		http.Redirect(w, r, loginEndpoint, http.StatusSeeOther)
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		currentSession, _ := sm.GetSession(w, r)
 		if currentSession == nil {
-			slog.Debug("no session available: initiate login")
+			slog.DebugContext(r.Context(), "no session available: initiate login")
 			redirectToLogin(w, r)
 			return
 		}
@@ -50,19 +51,19 @@ func AuthenticateHandler(sm *sessionManager, loginEndpoint string, next http.Han
 		// run silent refresh or redirect to login if session expired
 		if !currentSession.Valid() {
 			if !currentSession.HasRefreshToken() {
-				slog.Debug("no refresh token available: initiate login")
+				slog.DebugContext(r.Context(), "no refresh token available: initiate login")
 				redirectToLogin(w, r)
 				return
 			}
 
 			newSession, err := currentSession.Provider.Refresh(r.Context(), currentSession.Session)
 			if err != nil {
-				slog.Info("token refresh failed. initiate login", "err", err)
+				slog.InfoContext(r.Context(), "token refresh failed. initiate login", "err", err)
 				redirectToLogin(w, r)
 				return
 			}
 
-			slog.Info("token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
+			slog.InfoContext(r.Context(), "token refreshed", "access_token", newSession.HasAccessToken(), "refresh_token", newSession.HasRefreshToken(), "id_token", newSession.HasIDToken())
 
 			err = sm.SetSession(w, r, newSession)
 			if err != nil {
@@ -78,18 +79,17 @@ func AuthenticateHandler(sm *sessionManager, loginEndpoint string, next http.Han
 	})
 }
 
-func RefreshHandler(sm *sessionManager, postRefreshHandler http.Handler, errorHandler HTTPErrorHandler) http.Handler {
+func RefreshHandler(sm *sessionManager, postRefreshHandler http.Handler, errorHandler ErrorHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, _ := sm.GetSession(w, r)
 		if session == nil {
-			errorHandler(w, r, http.StatusUnauthorized, nil)
+			errorHandler(w, r, ErrDirect(http.StatusUnauthorized, fmt.Errorf("no session")))
 			return
 		}
 
 		newSession, err := session.Provider.Refresh(r.Context(), session.Session)
 		if err != nil {
-			slog.Info("session initialization after token refresh failed", "err", err)
-			errorHandler(w, r, http.StatusInternalServerError, err)
+			errorHandler(w, r, fmt.Errorf("token refresh failed: %w", err))
 			return
 		}
 
@@ -97,7 +97,7 @@ func RefreshHandler(sm *sessionManager, postRefreshHandler http.Handler, errorHa
 
 		err = sm.SetSession(w, r, newSession)
 		if err != nil {
-			errorHandler(w, r, http.StatusInternalServerError, err)
+			errorHandler(w, r, err)
 			return
 		}
 
@@ -109,7 +109,8 @@ func RefreshHandler(sm *sessionManager, postRefreshHandler http.Handler, errorHa
 
 // LogoutHandler deletes the session cookies, revokes the token (if supportd by
 // the provider) and redirects to the end_session_uri of the provider (if
-// supported by the provider).
+// supported by the provider). If no end_session_uri is available the
+// postLogoutHandler is run.
 func LogoutHandler(sm *sessionManager, postLogoutHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// remove session (delete cookie)
@@ -125,14 +126,14 @@ func LogoutHandler(sm *sessionManager, postLogoutHandler http.Handler) http.Hand
 		if session.HasRefreshToken() {
 			err := session.Provider.Revoke(r.Context(), session.RefreshToken())
 			if err != nil && err != ErrNotSupported {
-				slog.Warn("failed to revoke token", "err", err)
+				slog.WarnContext(r.Context(), "failed to revoke token", "err", err)
 			}
 		}
 
 		// redirect to end session endpoint if available
 		endSessionURL, err := session.Provider.EndSessionEndpoint(r.Context(), session.Session)
 		if err != nil && err != ErrNotSupported {
-			slog.Warn("failed to obtain end session endpoint", "err", err)
+			slog.WarnContext(r.Context(), "failed to obtain end session endpoint", "err", err)
 		}
 
 		if err == nil {

@@ -1,8 +1,9 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,13 +14,13 @@ import (
 // are configured the provider is selected via the query paramter
 // provider=<providerID>.  If multiple providers are configured
 // providerSelectionHandler can be used to render a provider selection dialog.
-func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler) http.Handler {
+func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler, errorHandler ErrorHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerID := r.URL.Query().Get("provider")
 
 		// If provider is not set and there is only one configured we use that one
 		providers := sm.providerSet.List()
-		if len(providers) == 1 && providerID == "" {
+		if providerID == "" && len(providers) == 1 {
 			providerID = providers[0].ID()
 		}
 
@@ -34,16 +35,14 @@ func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler) htt
 
 		provider, err := sm.providerSet.GetByID(providerID)
 		if err != nil {
-			slog.Error("invalid provider", "err", err)
-			http.Error(w, "invalid provider", http.StatusBadRequest)
+			errorHandler(w, r, ErrDirect(http.StatusBadRequest, fmt.Errorf("invalid provider '%s'", providerID)))
 			return
 		}
 
 		const STATE_LENGTH = 10
 		stateStr, err := randString(STATE_LENGTH)
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			slog.Error("faild to generate random state", "err", err)
+			errorHandler(w, r, err)
 			return
 		}
 
@@ -60,23 +59,22 @@ func LoginHandler(sm *sessionManager, providerSelectionHandler http.Handler) htt
 
 		err = sm.SetLoginState(w, r, state)
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			errorHandler(w, r, err)
 			return
 		}
 
 		redirectURL, err := provider.AuthorizationEndpoint(r.Context(), state.State)
 		if err != nil {
-			http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+			errorHandler(w, r, err)
 			return
 		}
-		slog.Debug("redirect for authentication", "url", redirectURL)
+		slog.DebugContext(r.Context(), "redirect for authentication", "url", redirectURL)
 		http.Redirect(w, r, redirectURL, http.StatusSeeOther)
 	})
 }
 
 // ProviderSelectionHandler returns a handler which shows a provider selection
 // dialog.
-// TODO: public?
 func ProviderSelectionHandler(appName string, providers []*Provider, tm *templateManager) http.Handler {
 	type LoginProviderData struct {
 		Name string

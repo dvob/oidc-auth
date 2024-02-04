@@ -1,12 +1,13 @@
-package oidcproxy
+package oidcauth
 
 import (
 	"encoding/json"
-	"log/slog"
+	"fmt"
 	"net/http"
 	"time"
 )
 
+// PathSet contains all pathes for the session info template.
 type PathSet struct {
 	// Login is the path to the login handler
 	Login string
@@ -18,13 +19,14 @@ type PathSet struct {
 	Refresh string
 }
 
+// SessionInfoTemplateData are the parameters for the session info template.
 type SessionInfoTemplateData struct {
 	Session  *Session
 	Provider *Provider
 	Path     PathSet
 }
 
-func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager, pathSet PathSet) http.Handler {
+func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager, pathSet PathSet, errorHandler ErrorHandler) http.Handler {
 	renderSessionHandler := func(w http.ResponseWriter, r *http.Request, s *SessionContext) {
 		var (
 			session  *Session
@@ -42,10 +44,14 @@ func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager, pathS
 		tm.servePage(w, "session_info_new", data)
 
 	}
-	return SessionInfoHandler(sm, renderSessionHandler)
+	return SessionInfoHandler(sm, renderSessionHandler, errorHandler)
 }
 
-func SessionInfoHandler(sm *sessionManager, renderSessionHandler func(w http.ResponseWriter, r *http.Request, s *SessionContext)) http.Handler {
+// SessionInfoHandler gets the session from the request using sessionManager
+// and then renders the session info using the renderSessionInfo function. If
+// the request accepts the MIME type application/json it returns a JSON
+// representation of the session.
+func SessionInfoHandler(sm *sessionManager, renderSessionHandler func(w http.ResponseWriter, r *http.Request, s *SessionContext), errorHandler ErrorHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, _ := sm.GetSession(w, r)
 
@@ -53,7 +59,7 @@ func SessionInfoHandler(sm *sessionManager, renderSessionHandler func(w http.Res
 		contentType := r.Header.Get("Accept")
 		if contentType == "application/json" {
 			if session == nil {
-				http.Error(w, "no session", http.StatusUnauthorized)
+				errorHandler(w, r, ErrDirect(http.StatusUnauthorized, fmt.Errorf("no session")))
 				return
 			}
 
@@ -71,11 +77,10 @@ func SessionInfoHandler(sm *sessionManager, renderSessionHandler func(w http.Res
 			w.Header().Add("Content-Type", "application/json")
 			out, err := json.Marshal(&sessionInfo)
 			if err != nil {
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				slog.Error("failed to marshal session info", "err", err)
+				errorHandler(w, r, err)
 				return
 			}
-			w.Write(out)
+			_, _ = w.Write(out)
 			return
 		}
 
