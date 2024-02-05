@@ -49,7 +49,6 @@ func TestRemoveOldCookies(t *testing.T) {
 }
 
 func TestSplit(t *testing.T) {
-
 	for i, test := range []struct {
 		data   string
 		cookie *http.Cookie
@@ -117,10 +116,8 @@ func TestSplit(t *testing.T) {
 			if value != test.data {
 				t.Fatalf("values and data are not equal.\n value='%s'\n data ='%s'", value, test.data)
 			}
-
 		})
 	}
-
 }
 
 func FuzzCookieSplit(f *testing.F) {

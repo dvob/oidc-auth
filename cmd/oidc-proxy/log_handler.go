@@ -1,4 +1,4 @@
-package oidcauth
+package main
 
 import (
 	"log/slog"
@@ -13,7 +13,7 @@ func newLogHandler(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(sw, r)
 		logger.LogAttrs(r.Context(), slog.LevelInfo,
-			"", // TODO: what should be the message
+			"http access",
 			slog.String("src", r.RemoteAddr),
 			slog.String("proto", r.Proto),
 			slog.String("method", r.Method),

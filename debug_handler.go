@@ -47,7 +47,6 @@ func DebugHandler(sm *sessionManager, providers []*Provider) http.Handler {
 			slog.Info("failed to encode json in info handler", "err", err)
 		}
 	})
-
 }
 
 type request struct {

@@ -42,7 +42,6 @@ func NewDefaultSessionInfoHandler(sm *sessionManager, tm *templateManager, pathS
 			Path:     pathSet,
 		}
 		tm.servePage(w, "session_info_new", data)
-
 	}
 	return SessionInfoHandler(sm, renderSessionHandler, errorHandler)
 }

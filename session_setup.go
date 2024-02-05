@@ -51,7 +51,6 @@ var defaultSessionSetupFunc SessionSetupFunc = func(ctx context.Context, p *Prov
 	// token response. See https://datatracker.ietf.org/doc/html/rfc6749#section-4.2.2
 	// This field is not REQUIRED so we set a default if it is not available.
 	if t.Token.Expiry.IsZero() {
-
 		s.Expiry = time.Now().Add(defaultSessionDuration)
 	} else {
 		// use the expires_in from the token response
@@ -146,7 +145,7 @@ func RequireIDTokenGroup(groups ...string) SessionSetupFunc {
 				return nil
 			}
 		}
-		return ErrDirect(http.StatusUnauthorized, fmt.Errorf("You are not authorized. You need to be a member of one of theses groups: %s", strings.Join(groups, ", ")))
+		return ErrDirect(http.StatusUnauthorized, fmt.Errorf("you are not authorized. you need to be a member of one of theses groups: %s", strings.Join(groups, ", ")))
 	}
 }
 
@@ -165,7 +164,7 @@ func NewSessionClaimCheckFunc(claimCheckFunc ClaimCheckFunc) SessionSetupFunc {
 		}
 		err = claimCheckFunc(claims)
 		if err != nil {
-			ErrDirect(http.StatusUnauthorized, err)
+			return ErrDirect(http.StatusUnauthorized, err)
 		}
 		return nil
 	}

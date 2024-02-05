@@ -6,8 +6,8 @@ builds:
   - linux
   ldflags:
   - -s -w
-  - -X github.com/dvob/oidc-proxy.version=v{{.Version}}
-  - -X github.com/dvob/oidc-proxy.commit={{.Commit}}
+  - -X github.com/dvob/oidc-auth/cmd/oidc-proxy.version=v{{.Version}}
+  - -X github.com/dvob/oidc-auth/cmd/oidc-proxy.commit={{.Commit}}
 archives:
 - name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
   format: binary

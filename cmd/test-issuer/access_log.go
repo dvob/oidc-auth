@@ -8,7 +8,6 @@ import (
 
 func logHandler(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 		sw := newStatusResponseWriter(w)
 		start := time.Now()
 		next.ServeHTTP(sw, r)

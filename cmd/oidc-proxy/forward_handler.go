@@ -1,10 +1,12 @@
-package oidcauth
+package main
 
 import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	oidcauth "github.com/dvob/oidc-auth"
 )
 
 // newForwardHandler returns a handler which forwards all requests to upstream
@@ -43,7 +45,7 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := SessionFromContext(r.Context())
+		s := oidcauth.SessionFromContext(r.Context())
 
 		if s != nil && s.HasAccessToken() {
 			r.Header.Set("Authorization", s.Tokens.Type()+" "+s.AccessToken())

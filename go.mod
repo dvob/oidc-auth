@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/coreos/go-oidc/v3 v3.6.0
-	github.com/dvob/oidc-proxy v0.0.0-20231222124302-93d10957ab84
 	github.com/gorilla/securecookie v1.1.1
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/oauth2 v0.12.0

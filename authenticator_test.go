@@ -113,9 +113,7 @@ func newTestComponents(t *testing.T, config *Config, handler http.Handler) *test
 }
 
 func TestFullMiddleware(t *testing.T) {
-	var (
-		debugLog = false
-	)
+	debugLog := false
 	t.Run("login", func(t *testing.T) {
 		var backendReq *http.Request
 		backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -19,7 +19,6 @@ func main() {
 }
 
 func run() error {
-
 	var (
 		config = testissuer.NewDefaultConfig()
 		addr   string
