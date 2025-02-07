@@ -344,6 +344,7 @@ func (p *Provider) EndSessionEndpoint(_ context.Context, session *Session) (stri
 	}
 
 	q := url.Values{}
+	q.Add("client_id", p.config.ClientID)
 
 	tokens := session.Tokens
 	if tokens != nil && tokens.IDToken != "" {
