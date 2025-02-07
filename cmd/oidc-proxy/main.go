@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,17 +30,19 @@ var (
 
 func run() error {
 	var (
-		defaultProvider = oidcauth.ProviderConfig{}
-		scopes          string
-		providerConfig  string
-		config          = oidcauth.NewDefaultConfig()
-		cookieHashKey   string
-		cookieEncKey    string
-		listenAddr      = "localhost:8080"
-		tlsCert         string
-		tlsKey          string
-		upstream        string
-		showVersion     bool
+		defaultProvider    = oidcauth.ProviderConfig{}
+		scopes             string
+		providerConfig     string
+		config             = oidcauth.NewDefaultConfig()
+		cookieHashKey      string
+		cookieEncKey       string
+		cookieRandKeys     bool
+		listenAddr         = "localhost:8080"
+		tlsCert            string
+		tlsKey             string
+		upstream           string
+		enableDebugHandler bool
+		showVersion        bool
 	)
 
 	// proxy options
@@ -55,7 +58,10 @@ func run() error {
 	flag.StringVar(&config.PostLogoutRediretURI, "post-logout-url", config.PostLogoutRediretURI, "post logout redirect uri")
 	flag.StringVar(&cookieHashKey, "cookie-hash-key", cookieHashKey, "cookie hash key")
 	flag.StringVar(&cookieEncKey, "cookie-enc-key", cookieEncKey, "cookie encryption key")
+	flag.BoolVar(&cookieRandKeys, "cookie-rand-keys", cookieRandKeys, "use a random key for cookie encryption and hash")
 	flag.BoolVar(&config.CookieConfig.Secure, "cookie-secure", config.CookieConfig.Secure, "set cookie secure setting")
+
+	flag.BoolVar(&enableDebugHandler, "enable-debug-handler", enableDebugHandler, "enable debug handler under /debug which shows actual tokens")
 
 	flag.StringVar(&config.TemplateDir, "template-dir", config.TemplateDir, "template dir to overwrite existing templates")
 	flag.BoolVar(&config.TemplateDevMode, "template-dev-mode", config.TemplateDevMode, "reload templates on each request")
@@ -109,26 +115,27 @@ func run() error {
 		slog.Info("configured provider", "client_id", p.ClientID, "issuer_url", p.IssuerURL, "name", p.Name)
 	}
 
+	if cookieHashKey == "" && cookieRandKeys {
+		randBytes := make([]byte, 32)
+		_, err := rand.Read(randBytes)
+		if err != nil {
+			panic(err)
+		}
+		cookieHashKey = string(randBytes)
+	}
+
+	if cookieEncKey == "" && cookieRandKeys {
+		randBytes := make([]byte, 32)
+		_, err := rand.Read(randBytes)
+		if err != nil {
+			panic(err)
+		}
+		cookieEncKey = string(randBytes)
+	}
+
 	config.HashKey = []byte(cookieHashKey)
 	config.EncryptionKey = []byte(cookieEncKey)
 	config.Providers = providers
-
-	var proxy http.Handler
-	if upstream != "" {
-		proxy, err = newForwardHandler(upstream, nil)
-		if err != nil {
-			return err
-		}
-	} else {
-		proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			s := oidcauth.SessionFromContext(r.Context())
-			if s.User != nil {
-				fmt.Fprintln(w, "hello "+s.User.Name)
-			} else {
-				fmt.Fprintln(w, "hello")
-			}
-		})
-	}
 
 	ctx := context.Background()
 
@@ -137,7 +144,34 @@ func run() error {
 		return err
 	}
 
+	debugHandler := oidcauth.DebugHandler(oidcAuth.SessionManager, oidcAuth.Providers)
+
+	var proxy http.Handler
+	if upstream != "" {
+		proxy, err = newForwardHandler(upstream, nil)
+		if err != nil {
+			return err
+		}
+	} else {
+		if enableDebugHandler {
+			proxy = debugHandler
+		} else {
+			proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				s := oidcauth.SessionFromContext(r.Context())
+				if s.User != nil {
+					fmt.Fprintln(w, "hello "+s.User.Name)
+				} else {
+					fmt.Fprintln(w, "hello")
+				}
+			})
+		}
+	}
+
 	authenticated := oidcAuth.FullMiddleware(proxy)
+
+	if enableDebugHandler {
+		authenticated.Handle("/auth/debug", debugHandler)
+	}
 
 	logger := newLogHandler(authenticated)
 
