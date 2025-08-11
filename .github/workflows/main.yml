@@ -55,7 +55,7 @@ jobs:
           SKO_USER: dvob
           SKO_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-            sko -tag "${GITHUB_REF##*/}" -tag latest dvob/oidc-proxy .
+            sko -tag "${GITHUB_REF##*/}" -tag latest dvob/oidc-proxy ./cmd/oidc-proxy
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v4
