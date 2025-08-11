@@ -30,20 +30,20 @@ var (
 
 func run() error {
 	var (
-		defaultProvider    = oidcauth.ProviderConfig{}
-		scopes             string
-		providerConfig     string
-		config             = oidcauth.NewDefaultConfig()
-		cookieHashKey      string
-		cookieEncKey       string
-		cookieRandKeys     bool
-		listenAddr         = "localhost:8080"
-		tlsCert            string
-		tlsKey             string
-		upstream           string
-		useIDToken         bool
-		enableDebugHandler bool
-		showVersion        bool
+		defaultProvider      = oidcauth.ProviderConfig{}
+		scopes               string
+		providerConfig       string
+		config               = oidcauth.NewDefaultConfig()
+		cookieHashKey        string
+		cookieEncKey         string
+		cookieRandKeys       bool
+		listenAddr           = "localhost:8080"
+		tlsCert              string
+		tlsKey               string
+		upstream             string
+		enableDebugHandler   bool
+		showVersion          bool
+		forwardHandlerConfig = forwardHandlerConfig{}
 	)
 
 	// proxy options
@@ -69,7 +69,8 @@ func run() error {
 	flag.StringVar(&config.AppName, "app-name", config.AppName, "app name to show on the provider selection login screen")
 
 	flag.StringVar(&upstream, "upstream", upstream, "url of the upsream. if not configured debug page is shown.")
-	flag.BoolVar(&useIDToken, "use-id-token", useIDToken, "send the id token to the upstream server")
+	flag.BoolVar(&forwardHandlerConfig.useIDToken, "use-id-token", forwardHandlerConfig.useIDToken, "send the id token to the upstream server")
+	flag.BoolVar(&forwardHandlerConfig.tlsInsecureSkipVerify, "tls-insecure-skip-verify", forwardHandlerConfig.tlsInsecureSkipVerify, "ignore TLS errors on upstream")
 
 	// server options
 	flag.StringVar(&listenAddr, "addr", listenAddr, "listen address")
@@ -150,7 +151,7 @@ func run() error {
 
 	var proxy http.Handler
 	if upstream != "" {
-		proxy, err = newForwardHandler(upstream, useIDToken, nil)
+		proxy, err = newForwardHandler(upstream, forwardHandlerConfig, nil)
 		if err != nil {
 			return err
 		}

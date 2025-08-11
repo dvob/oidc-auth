@@ -9,10 +9,15 @@ import (
 	oidcauth "github.com/dvob/oidc-auth"
 )
 
+type forwardHandlerConfig struct {
+	useIDToken            bool
+	tlsInsecureSkipVerify bool
+}
+
 // newForwardHandler returns a handler which forwards all requests to upstream
 // and adds to every request the access token of the session as Authorization
 // header.
-func newForwardHandler(upstream string, useIDToken bool, modifyRequest func(r *http.Request)) (http.Handler, error) {
+func newForwardHandler(upstream string, config forwardHandlerConfig, modifyRequest func(r *http.Request)) (http.Handler, error) {
 	targetURL, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
@@ -24,7 +29,7 @@ func newForwardHandler(upstream string, useIDToken bool, modifyRequest func(r *h
 
 		s := oidcauth.SessionFromContext(pr.In.Context())
 
-		if useIDToken {
+		if config.useIDToken {
 			if s != nil && s.HasIDToken() {
 				pr.Out.Header.Set("Authorization", s.Tokens.Type()+" "+s.IDToken())
 			}
@@ -44,14 +49,25 @@ func newForwardHandler(upstream string, useIDToken bool, modifyRequest func(r *h
 	http11Transport.ForceAttemptHTTP2 = false
 	http11Transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
 
+	if config.tlsInsecureSkipVerify {
+		http11Transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
+
 	http11Upstream := &httputil.ReverseProxy{
 		Rewrite:   rewriteFunc,
 		Transport: http11Transport,
 	}
 
-	// defaultUpstream := httputil.NewSingleHostReverseProxy(targetURL)
-
 	defaultTransport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if config.tlsInsecureSkipVerify {
+		defaultTransport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
+
 	defaultUpstream := &httputil.ReverseProxy{
 		Rewrite:   rewriteFunc,
 		Transport: defaultTransport,
