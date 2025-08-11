@@ -41,6 +41,7 @@ func run() error {
 		tlsCert            string
 		tlsKey             string
 		upstream           string
+		useIDToken         bool
 		enableDebugHandler bool
 		showVersion        bool
 	)
@@ -68,6 +69,7 @@ func run() error {
 	flag.StringVar(&config.AppName, "app-name", config.AppName, "app name to show on the provider selection login screen")
 
 	flag.StringVar(&upstream, "upstream", upstream, "url of the upsream. if not configured debug page is shown.")
+	flag.BoolVar(&useIDToken, "use-id-token", useIDToken, "send the id token to the upstream server")
 
 	// server options
 	flag.StringVar(&listenAddr, "addr", listenAddr, "listen address")
@@ -148,7 +150,7 @@ func run() error {
 
 	var proxy http.Handler
 	if upstream != "" {
-		proxy, err = newForwardHandler(upstream, nil)
+		proxy, err = newForwardHandler(upstream, useIDToken, nil)
 		if err != nil {
 			return err
 		}

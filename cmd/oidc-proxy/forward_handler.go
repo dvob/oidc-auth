@@ -12,7 +12,7 @@ import (
 // newForwardHandler returns a handler which forwards all requests to upstream
 // and adds to every request the access token of the session as Authorization
 // header.
-func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (http.Handler, error) {
+func newForwardHandler(upstream string, useIDToken bool, modifyRequest func(r *http.Request)) (http.Handler, error) {
 	targetURL, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err
@@ -21,6 +21,19 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	rewriteFunc := func(pr *httputil.ProxyRequest) {
 		pr.SetURL(targetURL)
 		pr.SetXForwarded()
+
+		s := oidcauth.SessionFromContext(pr.In.Context())
+
+		if useIDToken {
+			if s != nil && s.HasIDToken() {
+				pr.Out.Header.Set("Authorization", s.Tokens.Type()+" "+s.IDToken())
+			}
+		} else {
+			if s != nil && s.HasAccessToken() {
+				pr.Out.Header.Set("Authorization", s.Tokens.Type()+" "+s.AccessToken())
+			}
+		}
+
 		if modifyRequest != nil {
 			modifyRequest(pr.Out)
 		}
@@ -45,12 +58,6 @@ func newForwardHandler(upstream string, modifyRequest func(r *http.Request)) (ht
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := oidcauth.SessionFromContext(r.Context())
-
-		if s != nil && s.HasAccessToken() {
-			r.Header.Set("Authorization", s.Tokens.Type()+" "+s.AccessToken())
-		}
-
 		// Upgrade is only supported by HTTP/1.1
 		if r.Proto == "HTTP/1.1" && r.Header.Get("Upgrade") != "" {
 			http11Upstream.ServeHTTP(w, r)
